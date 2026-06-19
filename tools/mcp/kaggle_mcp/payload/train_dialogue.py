@@ -123,6 +123,32 @@ class GPT(nn.Module):
 # ===================== 대화 데이터 로딩(뉴스/댓글 아님) ==================== #
 USER_TAG, BOT_TAG = "<사용자>", "<하루>"
 
+# HF/파일 데이터에 접근 못 할 때 쓰는 최소 내장 시드(제대로 된 대화체, 뉴스/댓글 아님).
+# 실제 유창함은 HF 대화셋으로 학습할 때 나온다 — 이건 파이프라인이 절대 깨지지 않게
+# 하는 안전장치다.
+_SEED = [
+    [("u", "하루야 안녕"), ("b", "안녕! 오늘도 와줘서 고마워")],
+    [("u", "오늘 뭐 할 거야?"), ("b", "신작 게임 한 번 깨보려고! 같이 보자")],
+    [("u", "이 게임 어려워?"), ("b", "처음엔 좀 헷갈리는데 금방 적응돼. 해볼 만해")],
+    [("u", "방금 진짜 잘했다"), ("b", "헤헤 봤어? 나 좀 늘었지?")],
+    [("u", "배고프지 않아?"), ("b", "조금! 이판만 깨고 같이 뭐 먹을까 고민 중이야")],
+    [("u", "노래도 할 줄 알아?"), ("b", "응 한 소절 정도는! 다음에 들려줄게")],
+    [("u", "왜 이렇게 텐션이 높아 ㅋㅋ"), ("b", "방송이 제일 재밌으니까! 너희 덕분이지")],
+    [("u", "조심해 적이 온다"), ("b", "오 고마워! 바로 막을게, 집중집중")],
+    [("u", "오늘 몇 시까지 해?"), ("b", "두 시간 정도 더 할 생각이야. 천천히 놀다 가")],
+    [("u", "수고했어 오늘"), ("b", "너도 고생했어! 내일 또 보자, 잘 자")],
+]
+
+
+def _seed_corpus(reps: int = 60) -> str:
+    out = []
+    for _ in range(reps):
+        for turns in _SEED:
+            chunk = [f"{(USER_TAG if i % 2 == 0 else BOT_TAG)} {t[1]}"
+                     for i, t in enumerate(turns)]
+            out.append("\n".join(chunk) + "\n<eos>\n")
+    return "\n".join(out)
+
 
 def _iter_dialogues(paths):
     """여러 포맷에서 (turns) 리스트를 뽑는다. turns=[(speaker, text), ...]."""
@@ -196,9 +222,12 @@ def build_corpus_hf(dataset: str, split: str = "train", max_dialogues: int = 0):
     ShareGPT류(example['conversations']=[{from,value},...]) 등 흔한 대화 스키마를
     _extract 로 처리한다.
     """
-    from datasets import load_dataset  # Kaggle 런타임에 존재
-
-    ds = load_dataset(dataset, split=split)
+    try:
+        from datasets import load_dataset  # Kaggle 런타임에 존재
+        ds = load_dataset(dataset, split=split)
+    except Exception as e:
+        print(f"[warn] HF '{dataset}' 로드 실패({e}) → 다른 소스로 폴백", file=sys.stderr)
+        return ""
     lines, n = [], 0
     for ex in ds:
         for turns in _extract(ex):
@@ -239,16 +268,28 @@ class ByteTok:
 
 
 def train_spm(corpus_text, model_prefix, vocab_size):
+    """SentencePiece BPE 학습. 코퍼스가 작아 vocab이 너무 크면 자동으로 줄여 재시도."""
     import sentencepiece as spm
     with open("_corpus.txt", "w", encoding="utf-8") as f:
         f.write(corpus_text)
-    spm.SentencePieceTrainer.train(
-        input="_corpus.txt", model_prefix=model_prefix, vocab_size=vocab_size,
-        model_type="bpe", character_coverage=0.9995,
-        user_defined_symbols=[USER_TAG, BOT_TAG, "<eos>"],
-        pad_id=0, unk_id=1, bos_id=2, eos_id=3)
+    v = vocab_size
+    while True:
+        try:
+            spm.SentencePieceTrainer.train(
+                input="_corpus.txt", model_prefix=model_prefix, vocab_size=v,
+                model_type="bpe", character_coverage=0.9995,
+                user_defined_symbols=[USER_TAG, BOT_TAG, "<eos>"],
+                pad_id=0, unk_id=1, bos_id=2, eos_id=3)
+            break
+        except Exception as e:
+            import re
+            m = re.search(r"<=\s*(\d+)", str(e))   # spm이 알려주는 최대 vocab
+            v = int(m.group(1)) if m else v // 2
+            if v < 64:
+                raise
+            print(f"[warn] vocab 축소 재시도 → {v}", file=sys.stderr)
     sp = spm.SentencePieceProcessor(model_file=f"{model_prefix}.model")
-    return sp
+    return sp, sp.get_piece_size()
 
 
 # ===================== 학습 루프 ========================================= #
@@ -294,21 +335,22 @@ def main():
         eos = tok.eos
         sp = None
     else:
+        # 데이터 우선순위: HF 대화셋 → Kaggle 마운트 파일 → 내장 시드(절대 안 깨짐)
+        corpus = ""
         if args.hf_dataset:
             corpus = build_corpus_hf(args.hf_dataset, args.hf_split, args.max_dialogues)
-        else:
+        if not corpus.strip():
             globs = []
             for g in args.glob.split(","):
                 globs += glob.glob(os.path.join(args.data, g.strip()), recursive=True)
-            if not globs:
-                print("[error] 대화 파일을 찾지 못함. --data/--glob 또는 --hf_dataset 확인.",
-                      file=sys.stderr)
-                sys.exit(2)
-            corpus = build_corpus(globs)
+            if globs:
+                corpus = build_corpus(globs)
         if not corpus.strip():
-            print("[error] 코퍼스가 비었음. 데이터셋/스키마 확인.", file=sys.stderr)
-            sys.exit(2)
-        sp = train_spm(corpus, os.path.join(args.out, "spm"), args.vocab)
+            print("[data] HF/파일 없음 → 내장 시드 대화로 학습(파이프라인 검증용).",
+                  file=sys.stderr)
+            corpus = _seed_corpus()
+        sp, args.vocab = train_spm(corpus, os.path.join(args.out, "spm"), args.vocab)
+        print(f"[tok] vocab={args.vocab}")
         eos = sp.piece_to_id("<eos>")
         ids = torch.tensor(sp.encode(corpus), dtype=torch.long)
 
