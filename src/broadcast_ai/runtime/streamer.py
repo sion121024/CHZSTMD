@@ -78,6 +78,18 @@ class BroadcastStreamer:
             f"아바타: {av}"
         )
 
+    # ---- 학습된 대화 모델 연결 (Kaggle에서 받은 체크포인트) -----------------
+    def load_dialogue_model(self, ckpt_dir: str) -> bool:
+        """from-scratch로 학습한 대화 체크포인트를 연결한다. 성공 시 True.
+
+        실패(torch/체크포인트 없음)하면 Brain이 기존 Verbalizer 템플릿을 계속 쓴다.
+        """
+        from ..cognition.dialogue import DialogueModel
+
+        dm = DialogueModel(ckpt_dir)
+        self.brain.dialogue = dm if dm.available() else None
+        return dm.available()
+
     # ---- Live2D 아바타 연결 --------------------------------------------------
     def load_avatar(self, model3_path: str) -> Live2DModel:
         """사용자 Live2D 모델(.model3.json)을 연결한다. 이후 AI 모션이 이 모델의

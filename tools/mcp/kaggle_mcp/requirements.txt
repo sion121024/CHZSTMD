@@ -1,0 +1,6 @@
+# MCP 서버 자체가 필요로 하는 것
+mcp>=1.2
+kaggle>=1.6
+
+# (참고) payload/train_dialogue.py 는 Kaggle 커널 안에서 실행되며 그쪽에 이미
+# 설치된 torch / sentencepiece 를 쓴다. 이 MCP 서버 호스트에는 필요 없다.

@@ -40,6 +40,9 @@ class Brain:
         self.verbalizer = Verbalizer(name=self.persona.name)
         self.tutorial = TutorialLearner()
         self.last_intent = None
+        # 학습된 대화 모델(선택). 없으면 Verbalizer 템플릿으로 폴백.
+        self.dialogue = None
+        self.history: list[tuple[str, str]] = []
 
     # ---- 대화 ----------------------------------------------------------------
     def respond_chat(self, viewer_text: str) -> Iterator[str]:
@@ -50,9 +53,17 @@ class Brain:
             excite_drive=0.5,
             speaking=1.0,
         )
-        out = self.agent.tick(obs)
+        out = self.agent.tick(obs)   # 감정·에너지·모션은 항상 단일 에이전트가 구동
         self.last_intent = out.intent
-        text = self.verbalizer.say_chat(out.intent, viewer_text)
+
+        if self.dialogue is not None and self.dialogue.available():
+            # 학습된 from-scratch 대화 모델로 유창하게 응답.
+            text = self.dialogue.reply(self.history, viewer_text)
+            self.history.append(("user", viewer_text))
+            self.history.append(("bot", text))
+            self.history = self.history[-12:]
+        else:
+            text = self.verbalizer.say_chat(out.intent, viewer_text)
         yield from _stream_text(text)
 
     # ---- 게임 이벤트 코멘터리 ------------------------------------------------

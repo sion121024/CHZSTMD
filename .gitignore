@@ -43,6 +43,20 @@ out/
 *.gif
 *.jsonl
 
+# 비밀/인증 — 절대 커밋 금지 (Kaggle API 키 등)
+kaggle.json
+.kaggle/
+*.key
+.env
+
+# 학습 산출물(체크포인트/토크나이저/코퍼스) — 용량 크고 로컬용
+*.pt
+spm.model
+spm.vocab
+_corpus.txt
+checkpoints/
+ckpt*/
+
 # OS / editor
 .DS_Store
 .idea/
