@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "broadcast-ai"
+version = "0.1.0"
+description = "방송용 AI 버추얼 스트리머 — 완전 로컬, 단일 모델, 저지연"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "CHZSTMD" }]
+keywords = ["vtuber", "virtual-streamer", "local-llm", "low-latency", "tts", "avatar"]
+dependencies = []  # 코어는 표준 라이브러리만으로 동작 (requirements.txt = 선택적 가속/모델)
+
+[project.optional-dependencies]
+llm = ["llama-cpp-python>=0.2.90"]
+speech = ["piper-tts"]
+vision = ["mss", "pillow", "pytesseract"]
+accel = ["numpy>=1.26", "torch>=2.3"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+broadcast-ai = "broadcast_ai.runtime.streamer:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
