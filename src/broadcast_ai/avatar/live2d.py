@@ -39,9 +39,47 @@ class Live2DModel:
     def has(self, param_id: str) -> bool:
         return param_id in self.parameter_ids
 
+    # cdi3(DisplayInfo)가 없거나 비어 있을 때 가정하는 표준 Cubism 파라미터.
+    DEFAULT_PARAMS = [
+        "ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamEyeBallX", "ParamEyeBallY",
+        "ParamBodyAngleX", "ParamBodyAngleZ", "ParamBreath", "ParamBrowLY", "ParamBrowRY",
+        "ParamEyeLOpen", "ParamEyeROpen", "ParamEyeLSmile", "ParamEyeRSmile", "ParamCheek",
+        "ParamMouthOpenY", "ParamMouthForm", "ParamHairFront", "ParamHairSide", "ParamHairBack",
+    ]
+
+    @staticmethod
+    def _find_model3(path: str | Path) -> Path | None:
+        """파일이면 그대로, 폴더(또는 잘못된 파일경로)면 안에서 *.model3.json 탐색."""
+        p = Path(path)
+        if p.is_file() and p.name.endswith(".model3.json"):
+            return p
+        search_dir = p if p.is_dir() else p.parent
+        if not search_dir.exists():
+            return None
+        cands = sorted(search_dir.rglob("*.model3.json"))
+        return cands[0] if cands else None
+
+    @staticmethod
+    def diagnose(path: str | Path) -> str:
+        """무엇을 찾았는지 사람이 읽을 수 있게 보고(인식 실패 디버깅용)."""
+        p = Path(path)
+        d = p if p.is_dir() else p.parent
+        if not d.exists():
+            return f"경로가 존재하지 않음: {d}"
+        files = sorted(f.name for f in d.iterdir()) if d.is_dir() else []
+        m3 = [str(x) for x in d.rglob("*.model3.json")]
+        return f"폴더={d}\n  파일들={files[:40]}\n  발견된 .model3.json={m3 or '없음 ❌'}"
+
     @classmethod
     def load(cls, model3_path: str | Path) -> "Live2DModel":
-        p = Path(model3_path)
+        found = cls._find_model3(model3_path)
+        if not found:
+            raise FileNotFoundError(
+                f"Live2D 모델(.model3.json)을 인식하지 못했습니다.\n"
+                f"입력: {model3_path}\n{cls.diagnose(model3_path)}\n"
+                f"→ 해결: 모델 *폴더* 경로를 주세요(파일명이 달라도 자동으로 찾습니다). "
+                f"폴더 안에 .model3.json 이 실제로 있는지 확인하세요.")
+        p = found
         root = p.parent
         spec = json.loads(p.read_text(encoding="utf-8"))
         refs = spec.get("FileReferences", {})
@@ -65,6 +103,9 @@ class Live2DModel:
             for prm in cdi.get("Parameters", []):
                 param_ids.append(prm["Id"])
                 param_names[prm["Id"]] = prm.get("Name", prm["Id"])
+        if not param_ids:
+            # cdi3 없음/비었음 → 표준 파라미터로 가정해 어댑터가 동작하게 한다.
+            param_ids = list(cls.DEFAULT_PARAMS)
 
         return cls(
             root=root, moc_path=moc, texture_paths=textures, physics_path=physics,
