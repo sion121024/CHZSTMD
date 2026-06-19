@@ -92,9 +92,10 @@ def main() -> None:
     print(f"하루> {react.text}")
 
     section("6) Live2D 아바타 적용 (있을 때) — AI 모션 → 실제 파라미터")
-    model_path = Path(__file__).resolve().parents[1] / "assets/avatar/gothic_lolita/model.model3.json"
-    if model_path.exists():
-        model = s.load_avatar(str(model_path))
+    model_dir = Path(__file__).resolve().parents[1] / "assets/avatar/gothic_lolita"
+    # 폴더 안의 어떤 *.model3.json 이든 자동으로 찾는다(파일명 달라도 OK).
+    if list(model_dir.glob("*.model3.json")):
+        model = s.load_avatar(str(model_dir))
         print(model.summary())
         s._speaking = True; s._viseme_open = 0.7; s._energy = 0.8
         for i in range(3):
@@ -105,8 +106,8 @@ def main() -> None:
         n = s.export_live2d_motion("/tmp/live2d_motion.jsonl", seconds=2.0)
         print(f"AI 생성 모션 {n}프레임을 Live2D 파라미터 JSONL로 저장 → Cubism 런타임이 재생.")
     else:
-        print("모델 파일이 없습니다(유료 에셋은 git 제외). "
-              "assets/avatar/gothic_lolita/ 에 .model3.json/.moc3/텍스처를 넣으면 적용됩니다.")
+        print("모델 폴더에 .model3.json 이 없습니다(유료 에셋은 git 제외). "
+              "assets/avatar/gothic_lolita/ 에 모델 파일을 넣으면 자동 인식됩니다.")
 
     print("\n데모 완료 — 단일 모델 · AI 모션 · FPS 실시간 · 종합게임 자가학습 · Live2D 연동 · 외부 API 0건. ✅")
 
