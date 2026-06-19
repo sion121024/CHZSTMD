@@ -37,6 +37,12 @@ assets/avatar/**/*.png
 .cache/
 captures/
 
+# 렌더 출력물(영상/프레임/파라미터 덤프)은 커밋하지 않는다 — 저장소로 올리지 않음.
+out/
+*.mp4
+*.gif
+*.jsonl
+
 # OS / editor
 .DS_Store
 .idea/
