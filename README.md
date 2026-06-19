@@ -21,11 +21,24 @@
 
 ## 빠른 시작
 
+**Linux / macOS**
 ```bash
-PYTHONPATH=src python3 demo/run_demo.py     # 엔드투엔드 데모
-pip install pytest && PYTHONPATH=src python3 -m pytest   # 테스트 35개
+python3 demo/run_demo.py                 # 엔드투엔드 데모 (PYTHONPATH 불필요 — 스크립트가 src 자동 추가)
+pip install pytest && python3 -m pytest  # 테스트 35개 (conftest가 src 자동 추가)
 PYTHONPATH=src python3 -m broadcast_ai.runtime.streamer  # 대화형 CLI
 ```
+
+**Windows (CMD/PowerShell, 예: 갤럭시 북)** — `python3`이 아니라 `python`, `PYTHONPATH=...` 인라인 문법은 쓰지 않는다:
+```bat
+python demo\run_demo.py        REM 데모 (또는 더블클릭: run_demo.bat)
+python -m pytest               REM 테스트 (또는: run_tests.bat)
+
+REM 대화형 CLI는 둘 중 하나:
+set PYTHONPATH=src&& python -m broadcast_ai.runtime.streamer
+REM 또는 설치 후 어디서나:  pip install -e .   다음   broadcast-ai
+```
+> ⚠️ `PYTHONPATH=src python3 ...`(리눅스 문법)을 Windows에 그대로 치면
+> `'PYTHONPATH'은(는) ... 아닙니다` 오류가 납니다. 위 Windows 방식으로 실행하세요.
 
 데모 출력(발췌):
 
