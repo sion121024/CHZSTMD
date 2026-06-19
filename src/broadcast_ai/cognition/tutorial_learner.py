@@ -77,6 +77,22 @@ class TutorialLearner:
         recent = self.steps[-limit:]
         return ", ".join(s.as_action_hint() for s in recent)
 
+    def known_intents(self) -> set[str]:
+        """인게임 튜토리얼에서 실제로 습득한 조작 의도들(이해/미상 제외)."""
+        return {s.intent for s in self.steps if s.intent != "이해"}
+
+    def control_scheme(self) -> dict[str, list[str]]:
+        """의도 → 키 매핑. 게임을 플레이할 때 이 표만 보고 조작한다."""
+        scheme: dict[str, list[str]] = {}
+        for s in self.steps:
+            if s.intent != "이해" and s.keys:
+                scheme[s.intent] = s.keys     # 최신 학습이 우선
+        return scheme
+
+    def can(self, intent: str) -> bool:
+        """그 조작을 (튜토리얼로) 배웠는가 — 안 배웠으면 그 행동은 못 한다."""
+        return intent in self.known_intents()
+
     def next_practice(self) -> LearnedStep | None:
         """가장 자신 있는, 아직 적게 시도한 스텝을 골라 연습 대상으로 제안."""
         actionable = [s for s in self.steps if s.intent != "이해"]

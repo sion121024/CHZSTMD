@@ -1,16 +1,12 @@
-"""BroadcastStreamer — 모든 조각을 묶는 방송 AI 런타임.
+"""BroadcastStreamer — 단일 통합 모델을 중심으로 모든 것을 묶는 런타임.
 
-한 번의 반응 흐름
------------------
-입력(채팅/게임상황/화면텍스트)
-  → Brain.스트리밍 생성 (단일 로컬 모델)
-  → 토큰이 나오는 즉시 StreamingTTS로 음성 청크 합성  ← 첫 음성까지의 지연(TTFA) 측정
-  → 각 청크/조각으로 LipSync viseme 갱신
-  → MotionSynth가 idle/말하기 모션을 얹어 매 프레임 Pose 생성
-  → Rig → 렌더러로 송출
+하나의 UnifiedAgent가
+  * 매 프레임 아바타 모션을 *생성*하고 (고정 애니메이션 아님)
+  * FPS 게임 제어를 실시간으로 출력/학습하며
+  * 발화 의도(감정·에너지·말하기)를 결정한다.
 
-핵심: 토큰을 전부 기다렸다가 말하지 않는다. 첫 조각이 나오자마자 입을 열어
-"말이 빠르고 사람 같은" 반응을 만든다. 전부 로컬, 외부 API 없음.
+제어 루프(빠름, 매 프레임)와 발화(느림, 문장 단위)는 분리돼 있어, 말하는 중에도
+게임 반응이 끊기지 않는다 — FPS 실시간성의 핵심.
 """
 
 from __future__ import annotations
@@ -19,132 +15,155 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterator
 
 from ..config import Config
-from ..core.clock import LatencyBudget, now_ms
+from ..core.clock import LatencyBudget
 from ..gpu.device import detect_device
-from ..model.local_model import LocalModel
+from ..model.unified import UnifiedAgent, Observation, AgentOutput, Control
 from ..cognition.brain import Brain
 from ..cognition.persona import Persona
 from ..avatar.rig import Rig, Pose
-from ..avatar.motion import MotionSynth
+from ..avatar.motion import MotionAdapter
 from ..avatar.lipsync import LipSync
 from ..speech.tts import StreamingTTS, AudioChunk
 from ..perception.screen import ScreenSource
 from ..perception.ocr import OCR
+from ..game.fps_env import TargetRange, FPSResult
+from ..game.comprehensive import ComprehensiveGame, GameResult
 
 
 @dataclass
 class SpeakResult:
     text: str
     audio_chunks: list[AudioChunk] = field(default_factory=list)
-    first_audio_ms: float = 0.0       # 입력~첫 음성까지(TTFA)
-    total_audio_ms: float = 0.0       # 합성된 음성 총 길이
+    first_audio_ms: float = 0.0
+    total_audio_ms: float = 0.0
     warnings: list[str] = field(default_factory=list)
 
 
 class BroadcastStreamer:
     def __init__(self, config: Config | None = None,
-                 persona: Persona | None = None) -> None:
+                 persona: Persona | None = None, seed: int = 1234) -> None:
         self.cfg = config or Config()
         self.device = detect_device(self.cfg.gpu, self.cfg.model)
 
-        # 단일 모델: 한 번 적재해 상주.
-        self.model = LocalModel(self.cfg.model, self.device)
-        self.model.load()
+        # 처음부터 설계한 단일 모델 — 한 번 만들어 상주.
+        self.agent = UnifiedAgent(seed=seed)
 
-        self.brain = Brain(self.model, persona)
-        self.motion = MotionSynth(fps=self.cfg.avatar.fps,
-                                  blink_per_min=self.cfg.avatar.blink_per_min)
+        self.brain = Brain(self.agent, persona)
+        self.adapter = MotionAdapter()
         self.lipsync = LipSync()
         self.tts = StreamingTTS(self.cfg.speech)
         self.rig = Rig()
         self.screen = ScreenSource()
         self.ocr = OCR()
 
-        # 현재 입모양(립싱크가 갱신, 렌더 프레임에 합성).
-        self._cur_viseme_open = 0.0
-        self._cur_viseme_wide = 0.0
+        self._speaking = False
+        self._energy = 0.2
+        self._viseme_open = 0.0
+        self._viseme_wide = 0.0
 
-    # ---- 상태 요약 ------------------------------------------------------------
+    # ---- 상태 ----------------------------------------------------------------
     def status(self) -> str:
-        live = []
-        live.append(self.model.info())
-        live.append(f"TTS={'실음성' if self.tts.live else '폴백엔벌로프'}")
-        live.append(f"OCR={'실OCR' if self.ocr.live else '시뮬'}")
-        live.append(f"화면캡처={'라이브' if self.screen.live else '스크립트'}")
-        return " | ".join(live)
+        return (
+            f"단일모델: from-scratch 신경망, 파라미터 {self.agent.num_params:,}개 "
+            f"(사전학습/외부 모델 없음) | "
+            f"{self.device.summary()} | "
+            f"TTS={'실음성' if self.tts.live else '폴백'} | "
+            f"OCR={'실OCR' if self.ocr.live else '시뮬'}"
+        )
 
-    # ---- 핵심: 스트리밍 발화 --------------------------------------------------
+    # ---- 매 프레임 아바타 (AI가 모션 생성) -----------------------------------
+    def render_frame(self, context: Observation | None = None) -> dict:
+        """한 프레임: 에이전트를 틱해 모션을 생성하고 리그 포즈로 변환한다."""
+        obs = context or Observation()
+        obs.speaking = 1.0 if self._speaking else 0.0
+        obs.excite_drive = max(obs.excite_drive, self._energy)
+        out = self.agent.tick(obs)
+        self._energy = 0.7 * self._energy + 0.3 * out.intent.energy
+
+        pose: Pose = self.adapter.to_pose(out.motion, energy=self._energy)
+        if self._speaking:
+            pose.mouth_open = max(pose.mouth_open, self._viseme_open)
+            pose.mouth_wide = max(pose.mouth_wide, self._viseme_wide)
+        self.rig.apply(pose)
+        return self.rig.to_render_frame()
+
+    # ---- 단일 제어 틱 (외부 게임 연동용) -------------------------------------
+    def control_tick(self, obs: Observation, dt: float = 1.0 / 120.0) -> Control:
+        """게임 관측을 받아 이번 프레임의 FPS 제어를 반환한다."""
+        return self.agent.tick(obs, dt=dt).control
+
+    # ---- FPS 사격장 (실시간 제어 + 온라인 조준 학습) -------------------------
+    def play_fps(self, ticks: int = 600, learn: bool = True,
+                 seed: int = 0) -> FPSResult:
+        env = TargetRange(self.agent, seed=seed)
+        return env.run(ticks=ticks, learn=learn)
+
+    # ---- 종합 게임 (인게임 튜토리얼만으로 학습해 플레이) ---------------------
+    def play_comprehensive(self, objectives=None) -> GameResult:
+        """지금까지 *인게임 튜토리얼로* 습득한 조작 체계로 종합 게임을 플레이한다.
+
+        외부 튜토 영상/사전지식 없음. 못 배운 조작이 필요한 목표는 실패한다.
+        """
+        game = ComprehensiveGame(self.agent, self.brain.tutorial, objectives)
+        return game.play()
+
+    # ---- 저지연 스트리밍 발화 -------------------------------------------------
     def speak(self, token_stream: Iterator[str],
               on_event: Callable[[str, object], None] | None = None) -> SpeakResult:
-        """모델 토큰 스트림을 소비하며 즉시 음성/립싱크/모션을 구동한다."""
         budget = LatencyBudget(
             target_first_audio_ms=self.cfg.latency.target_first_audio_ms,
             target_think_ms=self.cfg.latency.target_think_ms,
         )
-        self.motion.set_speaking(True, energy=0.5)
+        self._speaking = True
+        self._energy = max(self._energy, 0.5)
         self.lipsync.reset()
-
-        result = SpeakResult(text="")
-        first_audio_marked = False
         think = budget.start("think")
+        result = SpeakResult(text="")
+        first = False
 
-        def emit(kind: str, data: object) -> None:
+        def emit(kind, data):
             if on_event:
                 on_event(kind, data)
+
+        def consume_chunk(chunk: AudioChunk):
+            nonlocal first
+            if not first:
+                budget.end(think)
+                result.first_audio_ms = budget.mark_first_audio()
+                first = True
+                emit("first_audio", result.first_audio_ms)
+            result.audio_chunks.append(chunk)
+            result.total_audio_ms += chunk.duration_ms
+            av = self.lipsync.from_audio_amplitude(chunk.amplitude)
+            self._viseme_open = av.mouth_open
+            emit("audio", chunk)
 
         for piece in token_stream:
             result.text += piece
             emit("token", piece)
-            # 텍스트 조각 → 입모양(오디오 청크 전에도 입이 먼저 반응).
             v = self.lipsync.from_text_piece(piece)
-            self._cur_viseme_open, self._cur_viseme_wide = v.mouth_open, v.mouth_wide
-
+            self._viseme_open, self._viseme_wide = v.mouth_open, v.mouth_wide
             for chunk in self.tts.feed(piece):
-                if not first_audio_marked:
-                    budget.end(think)
-                    result.first_audio_ms = budget.mark_first_audio()
-                    first_audio_marked = True
-                    emit("first_audio", result.first_audio_ms)
-                result.audio_chunks.append(chunk)
-                result.total_audio_ms += chunk.duration_ms
-                # 오디오 진폭으로 입 벌림을 다시 정교화.
-                av = self.lipsync.from_audio_amplitude(chunk.amplitude)
-                self._cur_viseme_open = av.mouth_open
-                emit("audio", chunk)
-
-        # 남은 버퍼 flush.
+                consume_chunk(chunk)
         for chunk in self.tts.flush():
-            if not first_audio_marked:
-                budget.end(think)
-                result.first_audio_ms = budget.mark_first_audio()
-                first_audio_marked = True
-                emit("first_audio", result.first_audio_ms)
-            result.audio_chunks.append(chunk)
-            result.total_audio_ms += chunk.duration_ms
-            emit("audio", chunk)
+            consume_chunk(chunk)
 
-        self.motion.set_speaking(False)
-        self.lipsync.reset()
-        self._cur_viseme_open = 0.0
-        self._cur_viseme_wide = 0.0
+        self._speaking = False
+        self._viseme_open = self._viseme_wide = 0.0
         result.warnings = budget.over_budget()
         return result
 
     # ---- 고수준 행동 ----------------------------------------------------------
     def on_chat(self, viewer_text: str, **kw) -> SpeakResult:
-        """시청자 채팅에 반응해 말한다."""
         return self.speak(self.brain.respond_chat(viewer_text), **kw)
 
-    def react_to_situation(self, situation: str, **kw) -> SpeakResult:
-        """게임 상황을 보고 다음 행동을 말로 결정한다."""
-        return self.speak(self.brain.decide_game_action(situation), **kw)
+    def comment(self, event: str, **kw) -> SpeakResult:
+        return self.speak(self.brain.comment_game(event), **kw)
 
     def study_screen_text(self, screen_text: str, **kw) -> SpeakResult:
-        """화면 튜토리얼 텍스트를 스스로 학습하고 소감을 말한다."""
         return self.speak(self.brain.learn_from_screen(screen_text), **kw)
 
     def watch_and_learn(self, **kw) -> list[SpeakResult]:
-        """화면을 프레임 단위로 보며 튜토리얼을 자동 학습한다(누가 안 알려줘도)."""
         results: list[SpeakResult] = []
         for frame in self.screen.frames():
             text = self.ocr.read(frame)
@@ -152,27 +171,15 @@ class BroadcastStreamer:
                 results.append(self.study_screen_text(text, **kw))
         return results
 
-    # ---- 아바타 렌더 프레임 ---------------------------------------------------
-    def render_frame(self) -> dict:
-        """현재 시점의 아바타 포즈 한 프레임. fps에 맞춰 호출."""
-        pose: Pose = self.motion.tick()
-        # 립싱크로 입모양 덮어쓰기(말 중이면 입이 음성과 맞물림).
-        pose.mouth_open = max(pose.mouth_open, self._cur_viseme_open)
-        pose.mouth_wide = max(pose.mouth_wide, self._cur_viseme_wide)
-        self.rig.apply(pose)
-        return self.rig.to_render_frame()
-
 
 # --------------------------------------------------------------------------- #
-def main() -> None:  # pragma: no cover - CLI 진입점
-    """`broadcast-ai` 콘솔 스크립트. 간단한 상호작용 데모."""
+def main() -> None:  # pragma: no cover
     from .. import __version__
 
-    streamer = BroadcastStreamer()
+    s = BroadcastStreamer()
     print(f"방송용 AI 버추얼 스트리머 v{__version__}")
-    print(streamer.status())
+    print(s.status())
     print("-" * 60)
-    print("채팅을 입력하면 AI가 반응합니다. (빈 줄/Ctrl-D 종료)")
     try:
         while True:
             try:
@@ -181,10 +188,9 @@ def main() -> None:  # pragma: no cover - CLI 진입점
                 break
             if not msg:
                 break
-            res = streamer.on_chat(msg)
-            print(f"{streamer.brain.persona.name}> {res.text}")
-            print(f"   ⤷ 첫 음성 {res.first_audio_ms:.0f}ms · "
-                  f"발화 {res.total_audio_ms:.0f}ms · 청크 {len(res.audio_chunks)}개")
+            res = s.on_chat(msg)
+            print(f"{s.brain.persona.name}> {res.text}")
+            print(f"   ⤷ 첫 음성 {res.first_audio_ms:.0f}ms · 청크 {len(res.audio_chunks)}개")
     except KeyboardInterrupt:
         pass
     print("\n방송 종료. 수고했어!")

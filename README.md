@@ -1,103 +1,114 @@
 # 방송용 AI 버추얼 스트리머 (CHZSTMD)
 
-**진짜 사람처럼 움직이고, 말이 빠르고 유창하며, GPU 친화적이고, 게임을 누가 안
-알려줘도 화면 튜토리얼만 보고 스스로 배우는** 방송용 AI 버추얼 캐릭터.
+**처음부터 설계한 단 하나의 신경망**이 FPS 게임을 실시간으로 플레이하고, 아바타를
+매 프레임 AI로 움직이며, 시청자 채팅에 저지연으로 반응하고, 게임 튜토리얼을 화면만
+보고 스스로 배운다. **완전 로컬, 외부 API/사전학습 모델 없음.**
 
 > 설계 제약 (요구사항 그대로)
-> - **API 없음** — 외부 API를 호출하지 않는다. 모든 추론은 **완전 로컬(온디바이스)**.
-> - **반응속도** — 토큰 스트리밍 → 점진적 음성 합성 → 립싱크/모션을 **동시에** 굴려
->   첫 음성(TTFA)을 수십 ms 안에 낸다.
-> - **단일 모델** — 대화·게임이해·튜토리얼학습을 **하나의 로컬 모델**이 멀티태스크로 처리.
+> - **기존 모델 안 씀 / 처음부터 설계** — torch·transformers·llama.cpp 같은 프레임워크나
+>   사전학습 체크포인트를 적재하지 않는다. 선형층·GRU 셀·활성함수를 **순수 파이썬으로
+>   직접 구현**(`src/broadcast_ai/nn/`)한 단일 신경망(`model/unified.py`).
+> - **AI가 움직임 / 고정 애니메이션 아님** — 아바타 모션은 사인파 클립이 아니라 매
+>   프레임 네트워크 forward로 *생성*된다. 비반복적이고 감정·게임 맥락에 반응한다.
+> - **FPS급 실시간** — 한 틱 추론이 수백 µs. CPU 순수 파이썬으로도 **1,000Hz 이상**
+>   (일반 FPS 60~240Hz의 수 배). 조준은 온라인으로 **실시간 학습**한다.
+> - **모델 1개** — 제어(FPS) · 모션(아바타) · 발화의도가 *같은* 은닉 상태에서 나온다.
+>   작업별로 모델을 나누지 않는다.
 
-이 저장소는 외부 의존성 0(표준 라이브러리만)으로 **지금 바로 실행/테스트**된다.
-실제 로컬 모델·TTS·OCR 가중치를 꽂으면 그대로 프로덕션 파이프라인이 된다(폴백 → 실백엔드).
+코어와 신경망 모두 **외부 의존성 0**(표준 라이브러리만)으로 지금 바로 실행/테스트된다.
 
 ---
 
 ## 빠른 시작
 
 ```bash
-# 의존성 설치 불필요 — 코어는 표준 라이브러리만으로 동작
-python3 demo/run_demo.py          # 엔드투엔드 데모
-python3 -m pytest                 # 테스트 (pip install pytest 후)
-python3 -m broadcast_ai.runtime.streamer   # 대화형 CLI (PYTHONPATH=src)
+PYTHONPATH=src python3 demo/run_demo.py     # 엔드투엔드 데모
+pip install pytest && PYTHONPATH=src python3 -m pytest   # 테스트 30개
+PYTHONPATH=src python3 -m broadcast_ai.runtime.streamer  # 대화형 CLI
 ```
 
-데모 출력 예 (발췌):
+데모 출력(발췌):
 
 ```
-시청자> 하루야 안녕!
-하루> ㅋㅋ 하루야 안녕! 그치, 나도 완전 공감해. 자 계속 가보자고!
-   첫 음성 13ms · 발화 2292ms · 청크 4개 · ✅ 지연 예산 내
+단일모델: from-scratch 신경망, 파라미터 16,636개 (사전학습/외부 모델 없음)
 
-📚 지금까지 배운 조작: 이동(WASD), 점프(SPACE), 공격(LMB), 방어(RMB), 상호작용(E), 재장전(R)
+▶ FPS 게임 — 실시간 제어 + 조준 온라인 학습
+추론 처리량 : 1,225 Hz  → FPS 실시간 가능: 예 ✅ (일반 FPS 60~240Hz)
+조준 오차   : 초반 0.201 → 후반 0.146  (학습으로 개선 ✅)
+명중        : 41회
+
+▶ 아바타 — AI가 매 프레임 모션을 *생성* (고정 클립 아님)
+  f0: head=[0.062, 0.060, 0.011] body_sway=-0.022 호흡=0.23 (매 프레임 다름)
 ```
 
 ---
 
-## 아키텍처
-
-한 번의 반응이 흐르는 경로 — 각 단계가 다음 단계를 **블로킹하지 않는다**:
+## 단 하나의 신경망 (`model/unified.py`)
 
 ```
-입력(채팅 / 게임상황 / 화면 텍스트)
-   │
-   ▼  perception/  ── 화면 캡처(mss) → OCR(pytesseract) ── 게임 화면을 "본다"
-   ▼  cognition/Brain ── 단일 LocalModel을 task 태그로 호출 (대화/게임/튜토리얼)
-   │        └ TutorialLearner ── 화면 안내문을 조작 지식으로 누적
-   ▼  (토큰 스트리밍) ───────────────────────────────────────────────┐
-   ▼  speech/StreamingTTS ── 글자 청크가 차면 즉시 합성  ← 첫 음성 지연(TTFA) 측정
-   ▼  avatar/LipSync ── 텍스트/오디오 → 입모양(viseme)
-   ▼  avatar/MotionSynth ── 호흡·깜빡임·미세흔들림·제스처 (순수 CPU 수학, 60fps)
-   ▼  avatar/Rig ── Pose → 렌더러(VRM/Live2D/Unity)로 송출
+관측 Observation(24) ─▶ 입력 임베딩(Linear) ─▶ GRU 코어(은닉 h, 48) ─┐
+                                                                      │ (공유 트렁크)
+        ┌──────────────────────┬──────────────────────┬──────────────┘
+        ▼                      ▼                      ▼
+  제어 헤드               모션 헤드               발화의도 헤드
+  aim(2)/move(2)/        12 포즈채널 속도        감정(6)/에너지/말하기
+  버튼(4)  + 온라인        → 적분해 살아있는        ↑ 같은 h_t에서 분기
+  조준 학습(NLMS)         움직임 생성              (= 모델 1개)
 ```
+
+- **트렁크**(`embed` + `GRUCell`)와 모든 헤드는 직접 구현한 가중치(Xavier 초기화, 시드
+  고정). 사전학습 없음 → 재현 가능하고 그대로 **학습 가능**(RL/모방학습 훅 자리).
+- **모션은 네트워크 출력**: 모션 헤드가 포즈 *속도*를 내고, 내부 OU 잡음 드라이브 +
+  GRU 동역학 + 감정/에너지가 섞여 비반복적·유기적 움직임이 된다(고정 사인 아님).
+- **조준은 온라인 학습**: 은닉 특징 h에서 "타깃을 중앙에 두는 시점 이동량"으로 가는
+  선형 사상을 NLMS로 매 틱 갱신 → 스크립트 에임봇이 아니라 *배우는* 정책.
 
 ### 요구사항 ↔ 구현 매핑
 
-| 요구 | 구현 위치 | 방법 |
-|------|-----------|------|
-| 진짜 사람처럼 움직임 | `avatar/motion.py` | 호흡 사인파 + 지수분포 깜빡임 + 의사-펄린 미세흔들림 + 말하기 제스처. 정지 상태도 "살아있게". |
-| 말이 빠름 (저지연) | `speech/tts.py`, `runtime/streamer.py` | 문장 끝을 안 기다리고 글자 청크가 차면 즉시 합성. 첫 토큰부터 입을 연다. `core/clock.py`로 TTFA 측정. |
-| GPU 친화 | `gpu/device.py`, `config.py` | 모델 1회 적재 후 **상주**(reload 없음), int4 양자화, VRAM 예산 기반 배치 자동조정, KV 캐시 재사용. CUDA/Metal 없으면 CPU 폴백. |
-| 말이 유창 | `cognition/persona.py`, `model/local_model.py` | 안정적 페르소나 프리픽스(KV 캐시 대상) + 구어체 시스템 프롬프트 + 스트리밍 디코딩. |
-| 튜토리얼 자동 학습 | `perception/`, `cognition/tutorial_learner.py` | 화면 OCR 텍스트 → 조작 의도/키 추출 → 누적 지식 → 같은 단일 모델 컨텍스트로 주입. |
+| 요구 | 위치 | 방법 |
+|------|------|------|
+| 처음부터 설계 | `nn/layers.py`, `model/unified.py` | Linear·GRU·tanh/sigmoid/softmax 직접 구현. 외부 모델 0. |
+| AI가 움직임(고정 X) | `model/unified.py` `_motion`, `avatar/motion.py` | 모션 헤드 출력을 적분 → 매 프레임 생성, 어댑터가 리그로 매핑. |
+| FPS 실시간 | `nn/`(작은 차원), `game/fps_env.py` | 한 틱 수백µs, >1000Hz. 처리량 측정/보고. |
+| 조준 빠르게 반응/학습 | `unified.learn_aim` (NLMS) | 은닉 특징→조준 온라인 회귀, 수십~수백 틱에 추적. |
+| 모델 1개 | 전체 | 제어·모션·의도가 같은 `h_t` 공유. `brain.agent is streamer.agent`. |
+| 말이 빠름(저지연) | `speech/tts.py`, `runtime/streamer.py` | 문장 끝 안 기다리고 글자 청크 즉시 합성, 첫 음성 ~1ms. |
+| 종합 게임 / 인게임 튜토리얼만으로 | `game/comprehensive.py`, `cognition/tutorial_learner.py` | 외부 영상·사전지식 없음. 게임이 띄우는 튜토리얼(OCR)에서만 조작 습득 → 배운 만큼만 플레이. |
+
+### 종합 게임을 "인게임 튜토리얼만으로" 학습
+
+특정 게임 한 종류가 아니라, 여러 메커니즘(이동·전투·점프·상호작용·재장전·메뉴)을 가진
+**종합 게임**을 다룬다. 에이전트는 조작 체계를 **사전에 모른다**. 외부 튜토리얼 영상도,
+별도 학습 단계도 없다 — 오직 게임 자신이 화면에 띄우는 튜토리얼을 OCR로 읽어 습득한다.
+
+```
+튜토리얼 학습 전 클리어: 0/6   (조작을 전혀 모름)
+[게임의 인게임 튜토리얼 팝업을 화면에서 읽는 중...]
+인게임 튜토리얼 학습 후 클리어: 6/6
+  ✅ 적 처치 (필요:공격) — 조준 학습 0.15→0.12, 명중 22   ← 전투는 같은 신경망의 온라인 조준
+```
+
+`TutorialLearner`가 화면 텍스트에서 의도→키 매핑(`control_scheme()`)을 만들고,
+`ComprehensiveGame`은 그 표에 있는 조작만 수행한다. 배우지 않은 조작이 필요한 목표는
+실패한다 — "배운 만큼만 플레이".
 
 ---
 
-## "단일 모델"의 의미
+## 제어 루프와 발화의 분리 (FPS 실시간의 핵심)
 
-`LocalModel` 인스턴스는 **하나뿐**이고, `Brain`이 작업에 따라 `task` 태그(`chat` /
-`game` / `tutorial`)만 바꿔 같은 모델에 흘려보낸다. 작업별로 모델을 따로 두지 않으므로
-
-- 메모리에 모델 1개만 상주 → VRAM 절약, GPU 친화
-- 모델 전환(reload)이 없어 → 매 턴 반응이 빠름
-- 페르소나/시스템 프리픽스의 KV 캐시를 모든 작업이 공유
+빠른 제어(매 프레임)와 느린 발화(문장 단위)를 분리한다. 말하는 중에도 게임 반응이
+끊기지 않는다.
 
 ```python
-assert streamer.brain.model is streamer.model   # 항상 같은 인스턴스
+s = BroadcastStreamer(seed=2025)
+
+# 매 프레임(예: 120~240Hz): 게임 제어 + 아바타 모션
+ctrl = s.control_tick(observation)     # FPS 액션 (aim/move/fire ...)
+frame = s.render_frame()               # AI가 생성한 아바타 포즈
+
+# 문장 단위(비동기): 발화는 별도로 흘러간다
+res = s.on_chat("방금 에임 미쳤다 ㅋㅋ")   # 첫 음성 ~1ms
 ```
-
----
-
-## 실제 백엔드 꽂기
-
-코어는 폴백으로 동작하지만, 아래를 설치/지정하면 자동으로 실백엔드로 전환된다
-(전부 **로컬** 패키지, 외부 API 아님):
-
-```bash
-# 단일 로컬 LLM (GGUF, CPU/GPU 친화)
-pip install llama-cpp-python
-export BAI_MODEL_PATH=/path/to/model.gguf
-
-# 저지연 온디바이스 TTS
-pip install piper-tts
-
-# 화면 인식 / OCR (게임 튜토리얼 자동 학습)
-pip install mss pillow pytesseract
-```
-
-주요 환경변수(`config.py`): `BAI_MODEL_PATH`, `BAI_CTX`, `BAI_MAX_REPLY`,
-`BAI_GPU`, `BAI_QUANT`, `BAI_VRAM_GB`, `BAI_TTS_CHUNK`, `BAI_FPS`, `BAI_TTFA`.
 
 ---
 
@@ -105,29 +116,42 @@ pip install mss pillow pytesseract
 
 ```
 src/broadcast_ai/
-  config.py            # 저지연/로컬 우선 기본값 설정
-  gpu/device.py        # GPU 감지·VRAM 예산·양자화·상주 적재 계획
-  core/                # event_bus(비동기 파이프라인), clock(지연 측정)
-  model/local_model.py # 단일 로컬 모델 (스트리밍 + 오프라인 폴백)
-  cognition/           # persona, brain(단일모델 허브), tutorial_learner
+  nn/                  # 처음부터 구현한 신경망: layers(Linear/GRU), seed(초기화)
+  model/unified.py     # ★ 단일 통합 에이전트 (제어+모션+의도, 온라인 조준학습)
+  game/fps_env.py      # FPS 사격장 (실시간 제어 + 조준 학습 시연/측정)
+  game/comprehensive.py # 종합 게임 (인게임 튜토리얼만으로 학습해 플레이)
+  cognition/           # brain(단일모델 허브), verbalizer(의도→한국어), tutorial_learner
   perception/          # screen(캡처), ocr
-  avatar/              # rig, motion(사람같은 모션), lipsync
+  avatar/              # rig, motion(신경망→포즈 어댑터), lipsync
+  speech/tts.py        # 저지연 스트리밍 TTS
+  core/                # event_bus, clock(지연 측정)
+  gpu/device.py        # GPU 감지·VRAM 예산·상주 적재 계획
   runtime/streamer.py  # 전체 오케스트레이터 + CLI
 demo/run_demo.py       # 엔드투엔드 데모
-tests/                 # 모션/립싱크/튜토리얼/통합 테스트 (17개)
+tests/                 # unified/fps/comprehensive/motion/lipsync/tutorial/streamer (30개)
 ```
 
 ---
 
-## 테스트
+## 실제 입출력 백엔드(선택)
+
+신경망은 자체 구현이라 LLM 런타임 의존성이 없다. 음성/화면만 실제 장치로 바꾸려면
+(전부 **로컬** 패키지):
 
 ```bash
-pip install pytest && python3 -m pytest -q
-# 17 passed
+pip install piper-tts            # 저지연 온디바이스 음성
+pip install mss pillow pytesseract   # 화면 캡처 + OCR (튜토리얼 학습)
+pip install numpy                # nn 백엔드 가속(선택) → 더 높은 Hz
 ```
 
-모션이 절대 완전정지하지 않음, 입모양이 모음에 반응, 튜토리얼 중복 제거,
-첫 음성이 전체 텍스트 완성 전에 나옴(저지연) 등을 검증한다.
+---
+
+## 다음 단계 (학습 훅)
+
+현재 가중치는 시드 고정 초기값이라 동작은 재현 가능하지만, 구조는 그대로 학습 가능하다:
+- 조준/이동 정책: 온라인 NLMS 외에 보상 기반 RL(자체 구현)로 확장
+- 모션 헤드: 사람 모션 통계로 모방학습(`train_motion_imitation` 훅 위치)
+- 발화: 의도 헤드 출력을 더 풍부한 텍스트 디코더와 결합
 
 ---
 

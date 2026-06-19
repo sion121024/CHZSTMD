@@ -5,19 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "broadcast-ai"
 version = "0.1.0"
-description = "방송용 AI 버추얼 스트리머 — 완전 로컬, 단일 모델, 저지연"
+description = "방송용 AI 버추얼 스트리머 — 완전 로컬, 처음부터 설계한 단일 신경망, 실시간"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "CHZSTMD" }]
-keywords = ["vtuber", "virtual-streamer", "local-llm", "low-latency", "tts", "avatar"]
-dependencies = []  # 코어는 표준 라이브러리만으로 동작 (requirements.txt = 선택적 가속/모델)
+keywords = ["vtuber", "virtual-streamer", "from-scratch-nn", "fps", "realtime", "single-model"]
+dependencies = []  # 코어+신경망 모두 표준 라이브러리만으로 동작 (외부 모델/프레임워크 없음)
 
 [project.optional-dependencies]
-llm = ["llama-cpp-python>=0.2.90"]
 speech = ["piper-tts"]
 vision = ["mss", "pillow", "pytesseract"]
-accel = ["numpy>=1.26", "torch>=2.3"]
+accel = ["numpy>=1.26"]
 dev = ["pytest>=8"]
 
 [project.scripts]

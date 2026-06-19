@@ -1,61 +1,74 @@
-"""Brain — 단일 모델을 쓰는 인지 허브.
+"""Brain — 단일 통합 모델을 쓰는 인지 허브.
 
-대화 / 게임 행동 / 튜토리얼 해석을 *하나의* LocalModel로 처리한다. 작업이 무엇이든
-같은 모델 인스턴스에 task 태그만 바꿔 흘려보낸다. 출력은 스트리밍이라 호출 측이
-첫 토큰부터 바로 말하기/움직이기를 시작할 수 있다.
+대화/게임/튜토리얼 무엇이든 *같은* UnifiedAgent를 틱(tick)해 발화 의도를 얻고,
+Verbalizer로 한국어로 표면화한다. 모델은 하나뿐이며, 이 모듈은 입력을 관측
+(Observation)으로 만들고 결과를 말로 옮긴다.
 """
 
 from __future__ import annotations
 
 from typing import Iterator
 
-from ..model.local_model import LocalModel, Turn
+from ..model.unified import Observation, UnifiedAgent
 from .persona import Persona
+from .verbalizer import Verbalizer
 from .tutorial_learner import TutorialLearner
 
 
+def _stream_text(text: str) -> Iterator[str]:
+    """문자열을 작은 조각으로 흘려 저지연 TTS 경로를 그대로 쓰게 한다."""
+    buf = ""
+    for ch in text:
+        buf += ch
+        if ch in " ,.!?…~\n" or len(buf) >= 4:
+            yield buf
+            buf = ""
+    if buf:
+        yield buf
+
+
+def _sentiment(text: str) -> float:
+    pos = sum(text.count(w) for w in ("ㅋ", "좋", "굿", "개잘", "사랑", "최고", "ㅎㅎ"))
+    neg = sum(text.count(w) for w in ("싫", "노잼", "별로", "망", "ㅠ", "안돼"))
+    return max(-1.0, min(1.0, 0.3 * (pos - neg)))
+
+
 class Brain:
-    def __init__(self, model: LocalModel, persona: Persona | None = None) -> None:
-        self.model = model
+    def __init__(self, agent: UnifiedAgent, persona: Persona | None = None) -> None:
+        self.agent = agent
         self.persona = persona or Persona()
+        self.verbalizer = Verbalizer(name=self.persona.name)
         self.tutorial = TutorialLearner()
-        self.history: list[Turn] = []
-        self._system = self.persona.system_prompt()
+        self.last_intent = None
 
-    # ---- 대화 (시청자 채팅 등) -----------------------------------------------
-    def respond_chat(self, user_text: str) -> Iterator[str]:
-        """시청자 입력에 스트리밍으로 답한다."""
-        yield from self._stream_and_record(user_text, task="chat")
+    # ---- 대화 ----------------------------------------------------------------
+    def respond_chat(self, viewer_text: str) -> Iterator[str]:
+        obs = Observation(
+            chat_activity=1.0,
+            chat_sentiment=_sentiment(viewer_text),
+            audience=0.5,
+            excite_drive=0.5,
+            speaking=1.0,
+        )
+        out = self.agent.tick(obs)
+        self.last_intent = out.intent
+        text = self.verbalizer.say_chat(out.intent, viewer_text)
+        yield from _stream_text(text)
 
-    # ---- 게임 행동 결정 -------------------------------------------------------
-    def decide_game_action(self, situation: str) -> Iterator[str]:
-        """현재 게임 상황 설명을 받아 다음 행동을 말로 결정한다.
+    # ---- 게임 이벤트 코멘터리 ------------------------------------------------
+    def comment_game(self, event: str, excited: float = 0.7) -> Iterator[str]:
+        obs = Observation(excite_drive=excited, speaking=1.0, target_visible=1.0)
+        out = self.agent.tick(obs)
+        self.last_intent = out.intent
+        text = self.verbalizer.say_game_event(out.intent, event)
+        yield from _stream_text(text)
 
-        지금까지 튜토리얼로 배운 조작을 컨텍스트로 함께 넣는다(같은 모델).
-        """
-        learned = self.tutorial.knowledge_summary()
-        prompt = f"[배운 조작: {learned}] 상황: {situation}"
-        yield from self._stream_and_record(prompt, task="game")
-
-    # ---- 튜토리얼 학습 + 반응 -------------------------------------------------
+    # ---- 튜토리얼 자동 학습 + 반응 -------------------------------------------
     def learn_from_screen(self, screen_text: str) -> Iterator[str]:
-        """화면에서 읽은 튜토리얼 텍스트를 학습하고, 배운 소감을 말한다."""
         learned = self.tutorial.observe(screen_text)
-        if learned:
-            hint = ", ".join(s.as_action_hint() for s in learned)
-            prompt = f"방금 익힌 조작: {hint}. 원문: {screen_text[:80]}"
-        else:
-            prompt = screen_text[:80]
-        yield from self._stream_and_record(prompt, task="tutorial")
-
-    # ---- 공통 스트리밍 + 히스토리 기록 ---------------------------------------
-    def _stream_and_record(self, user_text: str, task) -> Iterator[str]:
-        self.history.append(Turn("user", user_text))
-        collected: list[str] = []
-        for piece in self.model.stream(self._system, self.history, user_text, task=task):
-            collected.append(piece)
-            yield piece
-        self.history.append(Turn("assistant", "".join(collected)))
-        # 컨텍스트 폭주 방지(저지연 유지): 최근 turn만 남긴다.
-        if len(self.history) > 16:
-            self.history = self.history[-16:]
+        hint = ", ".join(s.as_action_hint() for s in learned) if learned else ""
+        obs = Observation(focus_drive=0.8, speaking=1.0)
+        out = self.agent.tick(obs)
+        self.last_intent = out.intent
+        text = self.verbalizer.say_tutorial(out.intent, hint, screen_text)
+        yield from _stream_text(text)

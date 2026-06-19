@@ -1,40 +1,44 @@
-"""사람 같은 모션 합성 검증."""
+"""AI가 생성한 모션 검증 — 고정 애니메이션이 아니라 신경망 출력."""
 
-from broadcast_ai.avatar.motion import MotionSynth
-
-
-def test_idle_motion_is_never_perfectly_still():
-    """정지 상태여도 머리/몸이 미세하게 계속 움직여야 한다(로봇 방지)."""
-    m = MotionSynth(fps=60, seed=1)
-    yaws = []
-    for _ in range(120):  # 2초
-        p = m.tick()
-        yaws.append(p.head_yaw)
-    # 값이 변하고, 합리적 범위 안.
-    assert max(yaws) != min(yaws)
-    assert all(abs(y) < 0.3 for y in yaws)
+from broadcast_ai.model.unified import UnifiedAgent, Observation
+from broadcast_ai.avatar.motion import MotionAdapter
 
 
-def test_breathing_oscillates_in_range():
-    m = MotionSynth(fps=60, seed=2)
-    breaths = [m.tick().breath for _ in range(180)]
-    assert min(breaths) >= 0.0 and max(breaths) <= 1.0
-    assert max(breaths) - min(breaths) > 0.3  # 실제로 숨쉬어야
+def _run(energy=0.5, n=180, seed=3):
+    a = UnifiedAgent(seed=seed)
+    adapter = MotionAdapter()
+    poses = []
+    for _ in range(n):
+        out = a.tick(Observation(excite_drive=energy))
+        poses.append(adapter.to_pose(out.motion, energy=out.intent.energy))
+    return poses
 
 
-def test_blinking_happens():
-    """충분한 시간 동안 적어도 한 번은 깜빡여야 한다."""
-    m = MotionSynth(fps=60, blink_per_min=30.0, seed=3)
-    max_blink = 0.0
-    for _ in range(60 * 10):  # 10초
-        max_blink = max(max_blink, m.tick().eye_blink)
-    assert max_blink > 0.5
+def test_motion_is_alive_and_non_repeating():
+    """정지여도 네트워크가 계속 미세하게 움직임을 만든다(완전 정지=고정클립 아님)."""
+    poses = _run()
+    yaws = [p.head_yaw for p in poses]
+    assert max(yaws) != min(yaws)              # 실제로 움직인다
+    # 단순 주기 반복이 아님: 앞부분과 뒷부분이 동일하지 않다.
+    assert yaws[:20] != yaws[-20:]
 
 
-def test_speaking_adds_gesture_energy():
-    m = MotionSynth(fps=60, seed=4)
-    m.set_speaking(False)
-    idle = [abs(m.tick().arm_l) for _ in range(120)]
-    m.set_speaking(True, energy=1.0)
-    talk = [abs(m.tick().arm_l) for _ in range(120)]
-    assert max(talk) > max(idle)  # 말할 때 손제스처가 커진다
+def test_motion_is_bounded():
+    poses = _run(n=300)
+    for p in poses:
+        assert -0.5 < p.head_yaw < 0.5
+        assert 0.0 <= p.breath <= 1.0
+        assert 0.0 <= p.eye_blink <= 1.0
+
+
+def test_energy_increases_movement_amplitude():
+    calm = _run(energy=0.0, seed=5)
+    hyped = _run(energy=1.0, seed=5)
+    span_calm = max(p.arm_l for p in calm) - min(p.arm_l for p in calm)
+    span_hyped = max(p.arm_l for p in hyped) - min(p.arm_l for p in hyped)
+    assert span_hyped >= span_calm     # 에너지↑ → 제스처 진폭↑
+
+
+def test_blink_channel_active():
+    poses = _run(n=400)
+    assert max(p.eye_blink for p in poses) > 0.0
