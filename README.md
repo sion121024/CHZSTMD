@@ -23,7 +23,7 @@
 
 ```bash
 PYTHONPATH=src python3 demo/run_demo.py     # 엔드투엔드 데모
-pip install pytest && PYTHONPATH=src python3 -m pytest   # 테스트 30개
+pip install pytest && PYTHONPATH=src python3 -m pytest   # 테스트 35개
 PYTHONPATH=src python3 -m broadcast_ai.runtime.streamer  # 대화형 CLI
 ```
 
@@ -112,6 +112,32 @@ res = s.on_chat("방금 에임 미쳤다 ㅋㅋ")   # 첫 음성 ~1ms
 
 ---
 
+## Live2D 아바타 적용 (`avatar/live2d.py`)
+
+보유하신 Live2D Cubism 모델(`.model3.json`/`.moc3`/`.cdi3.json`/...)을 연결하면, AI가
+생성한 모션·립싱크·표정이 **그 모델의 실제 파라미터 ID**를 구동한다.
+
+```python
+s = BroadcastStreamer()
+s.load_avatar("assets/avatar/gothic_lolita/model.model3.json")
+frame = s.render_live2d_frame()
+# → {"ParamAngleX": 3.7, "ParamEyeLOpen": 1.0, "ParamMouthOpenY": 0.7, "ParamBreath": 0.24, ...}
+s.export_live2d_motion("out.jsonl", seconds=5)   # Cubism 런타임이 재생할 프레임
+```
+
+- **모델 비종속 매핑**: 눈 깜빡임/립싱크 대상은 `model3.json`의 `Groups`(EyeBlink,
+  LipSync)에서 읽는다. 다른 Cubism 모델을 올려도 그 모델의 그룹/파라미터를 따른다.
+- 출력 dict를 Cubism 런타임의 `setParameterValueById(id, value)`에 그대로 넣으면 끝.
+  실제 메시 렌더링에는 **Live2D Cubism Core/SDK**(Web/Unity/Native)가 필요하다.
+
+> ⚠️ **유료/구매 모델은 git에 커밋하지 않는다.** 모델 바이너리(`.moc3`/텍스처/
+> `.physics3.json` 등)는 `.gitignore`로 제외되어 공개 저장소로 새지 않는다. 모델은
+> 로컬 `assets/avatar/<name>/` 에 두고 쓰며, 테스트는 자체 제작 중립 픽스처
+> (`tests/fixtures/example_cubism/`)를 사용한다. 폴더 사용법은
+> `assets/avatar/gothic_lolita/README.md` 참고.
+
+---
+
 ## 프로젝트 구조
 
 ```
@@ -122,13 +148,13 @@ src/broadcast_ai/
   game/comprehensive.py # 종합 게임 (인게임 튜토리얼만으로 학습해 플레이)
   cognition/           # brain(단일모델 허브), verbalizer(의도→한국어), tutorial_learner
   perception/          # screen(캡처), ocr
-  avatar/              # rig, motion(신경망→포즈 어댑터), lipsync
+  avatar/              # rig, motion(신경망→포즈 어댑터), lipsync, live2d(Cubism 연동)
   speech/tts.py        # 저지연 스트리밍 TTS
   core/                # event_bus, clock(지연 측정)
   gpu/device.py        # GPU 감지·VRAM 예산·상주 적재 계획
   runtime/streamer.py  # 전체 오케스트레이터 + CLI
 demo/run_demo.py       # 엔드투엔드 데모
-tests/                 # unified/fps/comprehensive/motion/lipsync/tutorial/streamer (30개)
+tests/                 # unified/fps/comprehensive/motion/lipsync/tutorial/streamer/live2d (35개)
 ```
 
 ---

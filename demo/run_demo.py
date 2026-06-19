@@ -91,7 +91,24 @@ def main() -> None:
     react = s.comment(f"튜토리얼만 보고 {after.completed}개 다 깼다")
     print(f"하루> {react.text}")
 
-    print("\n데모 완료 — 단일 모델 · AI 모션 · FPS 실시간 · 종합게임 자가학습 · 외부 API 0건. ✅")
+    section("6) Live2D 아바타 적용 (있을 때) — AI 모션 → 실제 파라미터")
+    model_path = Path(__file__).resolve().parents[1] / "assets/avatar/gothic_lolita/model.model3.json"
+    if model_path.exists():
+        model = s.load_avatar(str(model_path))
+        print(model.summary())
+        s._speaking = True; s._viseme_open = 0.7; s._energy = 0.8
+        for i in range(3):
+            fr = s.render_live2d_frame()
+            sel = {k: fr[k] for k in ("ParamAngleX", "ParamEyeLOpen", "ParamMouthOpenY", "ParamBreath") if k in fr}
+            print(f"  f{i} → {sel}")
+        s._speaking = False
+        n = s.export_live2d_motion("/tmp/live2d_motion.jsonl", seconds=2.0)
+        print(f"AI 생성 모션 {n}프레임을 Live2D 파라미터 JSONL로 저장 → Cubism 런타임이 재생.")
+    else:
+        print("모델 파일이 없습니다(유료 에셋은 git 제외). "
+              "assets/avatar/gothic_lolita/ 에 .model3.json/.moc3/텍스처를 넣으면 적용됩니다.")
+
+    print("\n데모 완료 — 단일 모델 · AI 모션 · FPS 실시간 · 종합게임 자가학습 · Live2D 연동 · 외부 API 0건. ✅")
 
 
 if __name__ == "__main__":

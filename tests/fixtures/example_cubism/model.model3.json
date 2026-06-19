@@ -1,0 +1,13 @@
+{
+  "Version": 3,
+  "_comment": "테스트용 중립 Cubism 디스크립터(자체 작성). 유료 에셋이 아니며 표준 파라미터 ID만 정의한다. 실제 .moc3/텍스처는 포함하지 않는다(어댑터는 파라미터 인터페이스만 사용).",
+  "FileReferences": {
+    "Moc": "model.moc3",
+    "Textures": [],
+    "DisplayInfo": "model.cdi3.json"
+  },
+  "Groups": [
+    { "Target": "Parameter", "Name": "EyeBlink", "Ids": ["ParamEyeLOpen", "ParamEyeROpen"] },
+    { "Target": "Parameter", "Name": "LipSync", "Ids": ["ParamMouthOpenY"] }
+  ]
+}

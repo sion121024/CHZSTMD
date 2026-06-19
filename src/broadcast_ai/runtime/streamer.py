@@ -23,6 +23,7 @@ from ..cognition.persona import Persona
 from ..avatar.rig import Rig, Pose
 from ..avatar.motion import MotionAdapter
 from ..avatar.lipsync import LipSync
+from ..avatar.live2d import Live2DModel, Live2DAvatar
 from ..speech.tts import StreamingTTS, AudioChunk
 from ..perception.screen import ScreenSource
 from ..perception.ocr import OCR
@@ -61,19 +62,32 @@ class BroadcastStreamer:
         self._viseme_open = 0.0
         self._viseme_wide = 0.0
 
+        # Live2D 아바타(선택): load_avatar()로 실제 모델을 연결한다.
+        self.live2d_model: Live2DModel | None = None
+        self.live2d: Live2DAvatar | None = None
+
     # ---- 상태 ----------------------------------------------------------------
     def status(self) -> str:
+        av = self.live2d_model.summary() if self.live2d_model else "기본 리그(렌더러 미연결)"
         return (
             f"단일모델: from-scratch 신경망, 파라미터 {self.agent.num_params:,}개 "
             f"(사전학습/외부 모델 없음) | "
             f"{self.device.summary()} | "
             f"TTS={'실음성' if self.tts.live else '폴백'} | "
-            f"OCR={'실OCR' if self.ocr.live else '시뮬'}"
+            f"OCR={'실OCR' if self.ocr.live else '시뮬'} | "
+            f"아바타: {av}"
         )
 
-    # ---- 매 프레임 아바타 (AI가 모션 생성) -----------------------------------
-    def render_frame(self, context: Observation | None = None) -> dict:
-        """한 프레임: 에이전트를 틱해 모션을 생성하고 리그 포즈로 변환한다."""
+    # ---- Live2D 아바타 연결 --------------------------------------------------
+    def load_avatar(self, model3_path: str) -> Live2DModel:
+        """사용자 Live2D 모델(.model3.json)을 연결한다. 이후 AI 모션이 이 모델의
+        실제 파라미터를 구동한다."""
+        self.live2d_model = Live2DModel.load(model3_path)
+        self.live2d = Live2DAvatar(self.live2d_model)
+        return self.live2d_model
+
+    # ---- 한 프레임의 포즈 계산(공용) ----------------------------------------
+    def _tick_pose(self, context: Observation | None = None) -> Pose:
         obs = context or Observation()
         obs.speaking = 1.0 if self._speaking else 0.0
         obs.excite_drive = max(obs.excite_drive, self._energy)
@@ -85,7 +99,45 @@ class BroadcastStreamer:
             pose.mouth_open = max(pose.mouth_open, self._viseme_open)
             pose.mouth_wide = max(pose.mouth_wide, self._viseme_wide)
         self.rig.apply(pose)
+        return pose
+
+    # ---- 매 프레임 아바타 (AI가 모션 생성) -----------------------------------
+    def render_frame(self, context: Observation | None = None) -> dict:
+        """한 프레임: 에이전트를 틱해 모션을 생성하고 리그 포즈로 변환한다."""
+        self._tick_pose(context)
         return self.rig.to_render_frame()
+
+    def render_live2d_frame(self, context: Observation | None = None) -> dict[str, float]:
+        """한 프레임을 *연결된 Live2D 모델의 실제 파라미터 값*으로 반환한다.
+
+        결과 dict를 Cubism 런타임의 setParameterValueById(id, value)에 그대로 넣으면
+        AI가 생성한 모션/립싱크/표정이 아바타에 적용된다.
+        """
+        if self.live2d is None:
+            raise RuntimeError("먼저 load_avatar(model3_path)로 Live2D 모델을 연결하세요.")
+        pose = self._tick_pose(context)
+        lip = self._viseme_open if self._speaking else None
+        return self.live2d.apply(pose, lipsync_open=lip)
+
+    def export_live2d_motion(self, path: str, seconds: float = 5.0,
+                             fps: int | None = None) -> int:
+        """AI가 생성한 모션을 Live2D 파라미터 프레임(JSONL)으로 저장한다.
+
+        Cubism 런타임(Web/Unity/Native)이 이 프레임들을 그대로 재생하면 아바타가
+        움직인다 — 렌더러 없이도 엔드투엔드 적용을 증명/전달할 수 있다.
+        """
+        import json
+
+        if self.live2d is None:
+            raise RuntimeError("먼저 load_avatar(model3_path)로 Live2D 모델을 연결하세요.")
+        fps = fps or self.cfg.avatar.fps
+        n = int(seconds * fps)
+        with open(path, "w", encoding="utf-8") as f:
+            for i in range(n):
+                frame = self.render_live2d_frame()
+                f.write(json.dumps({"t": round(i / fps, 4), "params": frame},
+                                   ensure_ascii=False) + "\n")
+        return n
 
     # ---- 단일 제어 틱 (외부 게임 연동용) -------------------------------------
     def control_tick(self, obs: Observation, dt: float = 1.0 / 120.0) -> Control:

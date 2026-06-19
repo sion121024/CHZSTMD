@@ -17,6 +17,20 @@ env/
 *.onnx
 models/weights/
 
+# 유료/구매 Live2D 에셋 — 모델 바이너리는 절대 커밋하지 않는다 (재배포 방지).
+# 사용자가 로컬 assets/ 경로에 두고 쓰며, 테스트는 tests/fixtures의 중립 픽스처 사용.
+assets/avatar/**/*.moc3
+assets/avatar/**/*.model3.json
+assets/avatar/**/*.cdi3.json
+assets/avatar/**/*.physics3.json
+assets/avatar/**/*.motion3.json
+assets/avatar/**/*.exp3.json
+assets/avatar/**/texture/
+assets/avatar/**/*.png
+# 단, 디렉터리 안내/고지 문서는 커밋한다.
+!assets/avatar/**/NOTICE.md
+!assets/avatar/**/README.md
+
 # Runtime output
 *.wav
 *.log

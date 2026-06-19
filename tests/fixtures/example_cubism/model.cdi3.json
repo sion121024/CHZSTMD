@@ -1,0 +1,26 @@
+{
+  "Version": 3,
+  "Parameters": [
+    { "Id": "ParamAngleX", "GroupId": "", "Name": "Angle X" },
+    { "Id": "ParamAngleY", "GroupId": "", "Name": "Angle Y" },
+    { "Id": "ParamAngleZ", "GroupId": "", "Name": "Angle Z" },
+    { "Id": "ParamEyeLOpen", "GroupId": "", "Name": "Eye L Open" },
+    { "Id": "ParamEyeROpen", "GroupId": "", "Name": "Eye R Open" },
+    { "Id": "ParamEyeLSmile", "GroupId": "", "Name": "Eye L Smile" },
+    { "Id": "ParamEyeRSmile", "GroupId": "", "Name": "Eye R Smile" },
+    { "Id": "ParamEyeBallX", "GroupId": "", "Name": "EyeBall X" },
+    { "Id": "ParamEyeBallY", "GroupId": "", "Name": "EyeBall Y" },
+    { "Id": "ParamBrowLY", "GroupId": "", "Name": "Brow L Y" },
+    { "Id": "ParamBrowRY", "GroupId": "", "Name": "Brow R Y" },
+    { "Id": "ParamMouthOpenY", "GroupId": "", "Name": "Mouth Open" },
+    { "Id": "ParamMouthForm", "GroupId": "", "Name": "Mouth Form" },
+    { "Id": "ParamCheek", "GroupId": "", "Name": "Cheek" },
+    { "Id": "ParamBodyAngleX", "GroupId": "", "Name": "Body Angle X" },
+    { "Id": "ParamBodyAngleZ", "GroupId": "", "Name": "Body Angle Z" },
+    { "Id": "ParamBreath", "GroupId": "", "Name": "Breath" },
+    { "Id": "ParamHairFront", "GroupId": "", "Name": "Hair Front" },
+    { "Id": "ParamHairSide", "GroupId": "", "Name": "Hair Side" },
+    { "Id": "ParamHairBack", "GroupId": "", "Name": "Hair Back" }
+  ],
+  "Parts": []
+}
