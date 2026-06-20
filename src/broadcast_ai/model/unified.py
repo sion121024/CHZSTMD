@@ -246,11 +246,13 @@ class UnifiedAgent:
     def _motion(self, h: list[float], dt: float, energy_hint: float) -> MotionPose:
         vel = tanh(self.head_motion(h))
         # 에너지가 높을수록 움직임 진폭이 커진다(감정→모션, 같은 모델 안에서).
-        gain = 0.8 + 1.0 * max(0.0, min(1.0, energy_hint))
-        damp = 0.09   # 중립으로 끌어당겨 폭주/표류 방지(관성 있는 안정화)
+        gain = 1.0 + 1.2 * max(0.0, min(1.0, energy_hint))
+        # 중립 복귀는 약하게(0.045) — 중립에 붙박이지 않고 천천히 더 멀리 배회해서
+        # '살아있는' 게 눈에 보이게. 적분(저역통과)이라 진폭만 커지고 떨림은 안 는다.
+        damp = 0.045
         for i in range(N_MOTION):
-            # 속도를 낮춰(×3.2) 천천히 움직이게 → 덜 어색하고 더 사람 같다
-            self.pose[i] += vel[i] * gain * dt * 3.2
+            # 속도 적분(×5.5) — 천천히, 하지만 분명히 움직이게
+            self.pose[i] += vel[i] * gain * dt * 5.5
             self.pose[i] += (self._neutral[i] - self.pose[i]) * damp
             self.pose[i] = _clamp(self.pose[i], -1.0, 1.0)
         return MotionPose(values={name: self.pose[i] for i, name in enumerate(MOTION_CHANNELS)})

@@ -229,35 +229,57 @@ def _extract(obj):
                 yield turns
             return
     if isinstance(obj, dict):
-        q = obj.get("Q") or obj.get("question") or obj.get("input")
-        a = obj.get("A") or obj.get("answer") or obj.get("output") or obj.get("response")
+        q = (obj.get("Q") or obj.get("question") or obj.get("input")
+             or obj.get("instruction") or obj.get("prompt"))
+        a = (obj.get("A") or obj.get("answer") or obj.get("output")
+             or obj.get("response") or obj.get("completion"))
         if q and a:
             yield [("user", str(q)), ("bot", str(a))]
 
 
-def build_corpus_hf(dataset: str, split: str = "train", max_dialogues: int = 0):
+def _load_one_hf(name: str, split: str):
+    """HF 데이터셋 하나를 견고하게 로드. 'mismatched columns' 류 오류를 우회한다."""
+    from datasets import load_dataset
+    last = None
+    # 1) 평범하게  2) 스트리밍(파일 스키마 충돌 회피)  순으로 시도
+    for kwargs in ({}, {"streaming": True}):
+        try:
+            ds = load_dataset(name, split=split, **kwargs)
+            return ds
+        except Exception as e:
+            last = e
+    raise last
+
+
+def build_corpus_hf(datasets: str, split: str = "train", max_dialogues: int = 0):
     """HuggingFace 대화 데이터셋에서 코퍼스를 만든다(뉴스/댓글 아님, 멀티턴).
 
-    Kaggle 커널엔 `datasets`가 보통 설치돼 있다(없으면 pip install datasets).
-    ShareGPT류(example['conversations']=[{from,value},...]) 등 흔한 대화 스키마를
-    _extract 로 처리한다.
+    `datasets` 는 콤마로 구분된 여러 데이터셋 이름. 잘 로드되는 것부터 순서대로
+    모은다(하나가 실패해도 다음으로 넘어감). ShareGPT류·Alpaca류(instruction/output)
+    등 흔한 대화 스키마를 _extract 로 처리한다.
     """
-    try:
-        from datasets import load_dataset  # Kaggle 런타임에 존재
-        ds = load_dataset(dataset, split=split)
-    except Exception as e:
-        print(f"[warn] HF '{dataset}' 로드 실패({e}) → 다른 소스로 폴백", file=sys.stderr)
-        return ""
-    lines, n = [], 0
-    for ex in ds:
-        for turns in _extract(ex):
-            chunk = [f"{(USER_TAG if i % 2 == 0 else BOT_TAG)} {t[1].strip()}"
-                     for i, t in enumerate(turns)]
-            lines.append("\n".join(chunk) + "\n<eos>\n")
-            n += 1
-        if max_dialogues and n >= max_dialogues:
+    names = [d.strip() for d in datasets.split(",") if d.strip()]
+    lines, total = [], 0
+    for name in names:
+        try:
+            ds = _load_one_hf(name, split)
+        except Exception as e:
+            print(f"[warn] HF '{name}' 로드 실패({e}) → 다음 데이터셋", file=sys.stderr)
+            continue
+        n = 0
+        for ex in ds:
+            for turns in _extract(ex):
+                chunk = [f"{(USER_TAG if i % 2 == 0 else BOT_TAG)} {t[1].strip()}"
+                         for i, t in enumerate(turns)]
+                lines.append("\n".join(chunk) + "\n<eos>\n")
+                n += 1; total += 1
+            if max_dialogues and total >= max_dialogues:
+                break
+        print(f"[data] HF '{name}' 대화 {n}건 로드")
+        if max_dialogues and total >= max_dialogues:
             break
-    print(f"[data] HF '{dataset}' 대화 {n}건 로드")
+    if total:
+        print(f"[data] HF 합계 대화 {total}건")
     return "\n".join(lines)
 
 
@@ -325,8 +347,10 @@ def main():
     ap.add_argument("--data", default="/kaggle/input", help="대화 데이터 루트(Kaggle 마운트)")
     ap.add_argument("--glob", default="**/*.jsonl,**/*.json,**/*.csv,**/*.txt")
     # 권장: 제대로 된 멀티턴 대화 데이터를 HF에서 받는다(뉴스/댓글 아님).
-    ap.add_argument("--hf_dataset", default="junelee/sharegpt_deepl_ko",
-                    help="HuggingFace 대화 데이터셋. ''로 비우면 --data의 Kaggle 파일 사용.")
+    # 콤마로 여러 개 — 잘 로드되는 것부터 모은다. 첫 번째가 막히면 다음으로 폴백.
+    ap.add_argument("--hf_dataset",
+                    default="beomi/KoAlpaca-v1.1a,junelee/sharegpt_deepl_ko,heegyu/korquad-chat-v1",
+                    help="HuggingFace 대화 데이터셋(콤마 구분). ''로 비우면 --data의 Kaggle 파일 사용.")
     ap.add_argument("--hf_split", default="train")
     ap.add_argument("--max_dialogues", type=int, default=0, help="0=전체")
     ap.add_argument("--out", default="/kaggle/working")

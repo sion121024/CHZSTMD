@@ -100,30 +100,67 @@ def _clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
 
 
+# 머리/몸 게인 — 우리 모션 헤드 출력은 ±0.05 수준으로 작다(EMA 평활 후 더 작음).
+# VTS는 '각도(도)'를 받으므로 그대로 넣으면 거의 안 움직인다. 보이는 범위로 키운다.
+# (사인파 합성이 아니라 'AI가 만든 신호'를 증폭하는 것 — 고정 애니메이션 아님)
+HEAD_GAIN = 185.0      # 평상시 ~5도, 큰 동작은 ~28도(클램프)
+SWAY_GAIN = 9.0
+
+
 def map_to_vts(frame: dict) -> dict[str, float]:
-    """우리 rig 프레임 → VTS 기본 트래킹 파라미터."""
+    """우리 rig 프레임 → VTS 기본 트래킹 파라미터(보이는 범위로 증폭)."""
     head = frame["head"]            # [yaw, pitch, roll]
     mouth = frame["mouth"]
     eyes = frame["eyes"]
+    breath = frame.get("breath", 0.0)
+    sway = frame["body_sway"]
     return {
-        "FaceAngleX": _clamp(head[0] * 110.0, -30, 30),
-        "FaceAngleY": _clamp(head[1] * 110.0, -30, 30),
-        "FaceAngleZ": _clamp(head[2] * 110.0, -30, 30),
-        "FacePositionX": _clamp(frame["body_sway"] * 3.0, -1, 1),
+        # 머리 — AI 모션을 보이는 각도로. 좌우(X)는 몸통 흔들림도 약간 더해 생동감.
+        "FaceAngleX": _clamp(head[0] * HEAD_GAIN + sway * 6.0, -28, 28),
+        "FaceAngleY": _clamp(head[1] * HEAD_GAIN, -25, 25),
+        "FaceAngleZ": _clamp(head[2] * HEAD_GAIN * 0.9, -28, 28),
+        # 몸 위치 — 좌우 무게중심 + 호흡에 따른 미세한 상하. 모델이 '살아있게' 보임.
+        "FacePositionX": _clamp(sway * SWAY_GAIN, -10, 10),
+        "FacePositionY": _clamp((breath - 0.5) * 2.2, -10, 10),
         "MouthOpen": _clamp(mouth["open"], 0, 1),
         "MouthSmile": _clamp(0.5 + 0.5 * mouth["wide"] + mouth["smile"], 0, 1),
+        # 입모양(아/이): VTS의 MouthForm/MouthX 가 있으면 모음 폭이 더 자연스러움.
+        "MouthForm": _clamp(mouth["wide"], -1, 1),
         "EyeOpenLeft": _clamp(1.0 - eyes["blink"], 0, 1),
         "EyeOpenRight": _clamp(1.0 - eyes["blink"], 0, 1),
         "Brows": _clamp(eyes["brow"], -1, 1),
     }
 
 
-def _talk_mouth(t):
-    syl = t * 5.5
-    i = int(syl); frac = syl - i
-    r = (math.sin(i * 12.9898) * 43758.5453) % 1.0
-    return max(0.0, (0.3 + 0.6 * r) * (math.sin(math.pi * frac) ** 1.4)), \
-        0.35 * ((math.sin(i * 7.13) + 1) / 2) - 0.1
+class _Mouth:
+    """말할 때 입을 자연스럽게 — 음절 펄스 + 어택/릴리스 평활.
+
+    이전엔 음절 사이에 입이 0으로 '딱' 닫혀 덜덜거렸다(어색함의 원인).
+    여기선 약한 베이스 개구 + 부드러운 펄스를 attack/release로 이어 붙인다.
+    """
+
+    def __init__(self):
+        self.open = 0.0
+        self.form = 0.0
+
+    def update(self, t: float, dt: float) -> tuple[float, float]:
+        syl = t * 4.6                      # 음절 속도(조금 낮춰 또박또박)
+        i = int(syl); frac = syl - i
+        r = (math.sin(i * 12.9898) * 43758.5453) % 1.0
+        pulse = (0.35 + 0.55 * r) * (math.sin(math.pi * frac) ** 1.1)
+        target = 0.12 + 0.9 * max(0.0, pulse)        # 베이스 0.12 → 완전히 안 닫힘
+        # 입은 빨리 열리고(어택) 천천히 닫힌다(릴리스) → 더 사람처럼
+        k = (1 - math.exp(-dt / 0.045)) if target > self.open else (1 - math.exp(-dt / 0.09))
+        self.open += (target - self.open) * k
+        # 모음 폭(아↔이) — 음절마다 살짝, 부드럽게
+        fwide = 0.45 * ((math.sin(i * 7.13) + 1) / 2) - 0.15
+        self.form += (fwide - self.form) * (1 - math.exp(-dt / 0.07))
+        return self.open, self.form
+
+    def relax(self, dt: float):
+        self.open += (0.0 - self.open) * (1 - math.exp(-dt / 0.12))
+        self.form += (0.0 - self.form) * (1 - math.exp(-dt / 0.12))
+        return self.open, self.form
 
 
 EMO_CYCLE = ["amused", "neutral", "excited", "focused", "surprised", "excited", "neutral"]
@@ -144,23 +181,37 @@ def main():
                 emo2hk[emo] = h.get("hotkeyID"); break
 
     s = BroadcastStreamer(seed=2025)
+    mouth = _Mouth()
     last_emo = None
+    smooth: dict[str, float] = {}        # 주입값 프레임간 평활 → 끊김 없이 부드럽게
     t0 = time.perf_counter()
+    tprev = t0
     print("AI 구동 시작 — VTS의 youling이 움직입니다. (Ctrl+C 종료)")
+    print("머리가 안 움직이면 VTS에서 웹캠 트래킹을 끄세요"
+          "(설정 → 카메라 Off). 그래야 우리 AI 주입값이 머리를 구동합니다.")
     try:
         while True:
-            t = time.perf_counter() - t0
+            now = time.perf_counter()
+            t = now - t0
+            dt = min(0.1, now - tprev); tprev = now
             speaking = (t % 8.0) < 3.0
             s._speaking = speaking
             s.emotion_override = "excited" if speaking else EMO_CYCLE[int(t / 5.0) % len(EMO_CYCLE)]
             if speaking:
-                s._viseme_open, s._viseme_wide = _talk_mouth(t)
-                s._energy = 0.8
+                s._viseme_open, s._viseme_wide = mouth.update(t, dt)
+                s._energy = 0.85
             else:
-                s._viseme_open = s._viseme_wide = 0.0
+                s._viseme_open, s._viseme_wide = mouth.relax(dt)
 
             frame = s.render_frame()                 # rig 프레임(감정·모션·립싱크 반영)
-            vts.inject(map_to_vts(frame))
+            params = map_to_vts(frame)
+            # 프레임간 EMA — 머리/몸은 부드럽게, 입/눈은 빠르게 따라가게(반응성 유지)
+            for k, v in params.items():
+                a = 0.45 if k.startswith(("Mouth", "EyeOpen")) else 0.25
+                v = a * v + (1 - a) * smooth.get(k, v)
+                smooth[k] = v
+                params[k] = v
+            vts.inject(params)
 
             # 감정 바뀌면 표정 핫키 트리거
             if s._emotion != last_emo and s._emotion in emo2hk:
