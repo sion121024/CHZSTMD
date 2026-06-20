@@ -35,9 +35,37 @@ class Live2DModel:
     parameter_names: dict[str, str] = field(default_factory=dict)
     eyeblink_ids: list[str] = field(default_factory=list)
     lipsync_ids: list[str] = field(default_factory=list)
+    part_ids: list[str] = field(default_factory=list)
+    part_names: dict[str, str] = field(default_factory=dict)
+    # 표정 파일: [(이름, Path), ...]
+    expressions: list = field(default_factory=list)
+
+    # 무료/체험 표식(워터마크) 추정 키워드 (KO/EN/JP)
+    WATERMARK_KW = [
+        "무료", "체험", "샘플", "표식", "워터마크", "데모",
+        "free", "trial", "sample", "watermark", "logo", "demo",
+        "ロゴ", "透かし", "体験", "サンプル", "無料", "ウォーターマーク",
+    ]
 
     def has(self, param_id: str) -> bool:
         return param_id in self.parameter_ids
+
+    def watermark_candidates(self) -> list[tuple[str, str, str]]:
+        """이름/ID에 표식 키워드가 들어간 파트·파라미터 후보를 찾는다.
+
+        반환: [(kind('part'|'param'), id, name), ...]
+        """
+        kw = [k.lower() for k in self.WATERMARK_KW]
+        out: list[tuple[str, str, str]] = []
+        for pid in self.part_ids:
+            name = self.part_names.get(pid, pid)
+            if any(k in (pid + " " + name).lower() for k in kw):
+                out.append(("part", pid, name))
+        for pid in self.parameter_ids:
+            name = self.parameter_names.get(pid, pid)
+            if any(k in (pid + " " + name).lower() for k in kw):
+                out.append(("param", pid, name))
+        return out
 
     # cdi3(DisplayInfo)가 없거나 비어 있을 때 가정하는 표준 Cubism 파라미터.
     DEFAULT_PARAMS = [
@@ -97,20 +125,35 @@ class Live2DModel:
 
         param_ids: list[str] = []
         param_names: dict[str, str] = {}
+        part_ids: list[str] = []
+        part_names: dict[str, str] = {}
         disp = refs.get("DisplayInfo")
         if disp and (root / disp).exists():
             cdi = json.loads((root / disp).read_text(encoding="utf-8"))
             for prm in cdi.get("Parameters", []):
                 param_ids.append(prm["Id"])
                 param_names[prm["Id"]] = prm.get("Name", prm["Id"])
+            for prt in cdi.get("Parts", []):
+                part_ids.append(prt["Id"])
+                part_names[prt["Id"]] = prt.get("Name", prt["Id"])
         if not param_ids:
             # cdi3 없음/비었음 → 표준 파라미터로 가정해 어댑터가 동작하게 한다.
             param_ids = list(cls.DEFAULT_PARAMS)
+
+        # 표정: model3.json 참조 우선, 없으면 폴더의 *.exp3.json 보강.
+        expressions: list = []
+        for ex in refs.get("Expressions", []):
+            f = root / ex.get("File", "")
+            expressions.append((ex.get("Name", f.stem), f))
+        if not expressions:
+            for f in sorted(root.glob("*.exp3.json")):
+                expressions.append((f.stem, f))
 
         return cls(
             root=root, moc_path=moc, texture_paths=textures, physics_path=physics,
             parameter_ids=param_ids, parameter_names=param_names,
             eyeblink_ids=eyeblink, lipsync_ids=lipsync,
+            part_ids=part_ids, part_names=part_names, expressions=expressions,
         )
 
     def summary(self) -> str:

@@ -36,6 +36,23 @@ http://localhost:8765/tools/web_viewer/index.html?model=내모델.model3.json
 ```
 모델 폴더는 `assets/avatar/gothic_lolita/` 입니다(여기에 youling 파일들이 있어야 함).
 
+## 표정 바꾸기 (.exp3.json)
+
+뷰어에서 **숫자키 `1`~`9`, `0`** 으로 표정을 전환합니다(youling의 expression1~10).
+`Esc` 또는 `` ` `` 로 해제. 화면 좌상단에 현재 표정이 표시됩니다.
+
+## 무료버전 표식(워터마크) 제거
+
+서버가 모델의 파트/파라미터 이름에서 표식 키워드(무료·체험·sample·watermark·ロゴ 등)를
+찾아 **자동으로 숨깁니다**(해당 파트 불투명도 0).
+
+자동으로 안 잡히면(이름이 다르면) 직접 찾습니다:
+```bat
+python inspect_model.py "C:\경로\youling폴더"
+```
+→ 파트/파라미터 목록이 나옵니다. 표식으로 의심되는 줄을 알려주시면 정확히 끄도록
+연결해 드립니다.
+
 ## 방송 송출
 
 OBS → **브라우저 소스**에 위 URL을 넣으면 투명 배경으로 youling이 송출됩니다.

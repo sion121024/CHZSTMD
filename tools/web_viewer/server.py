@@ -32,16 +32,54 @@ FPS = 45
 MODEL_DIR = ROOT / "assets" / "avatar" / "gothic_lolita"
 
 _latest: dict = {}
+_model = None          # Live2DModel (표정/파트/표식 조회용)
 _lock = threading.Lock()
+
+
+def _parse_exp3(path) -> list[dict]:
+    """exp3.json → [{id, value, blend}] 파라미터 오버라이드 목록."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    out = []
+    for p in data.get("Parameters", []):
+        out.append({"id": p.get("Id"), "value": p.get("Value", 0.0),
+                    "blend": p.get("Blend", "Overwrite")})
+    return out
+
+
+def _expressions_payload() -> list[dict]:
+    if _model is None:
+        return []
+    return [{"name": name, "params": _parse_exp3(path)}
+            for name, path in _model.expressions]
+
+
+def _inspect_payload() -> dict:
+    if _model is None:
+        return {"parameters": [], "parts": [], "watermark": []}
+    wm = _model.watermark_candidates()
+    return {
+        "parameters": [{"id": i, "name": _model.parameter_names.get(i, i)}
+                       for i in _model.parameter_ids],
+        "parts": [{"id": i, "name": _model.part_names.get(i, i)}
+                  for i in _model.part_ids],
+        "watermark": [{"kind": k, "id": i, "name": n} for k, i, n in wm],
+        "watermark_part_ids": [i for k, i, n in wm if k == "part"],
+        "watermark_param_ids": [i for k, i, n in wm if k == "param"],
+    }
 
 
 def _ai_loop() -> None:
     """백그라운드에서 AI를 돌리며 매 프레임 Live2D 파라미터를 갱신한다."""
-    global _latest
+    global _latest, _model
     s = BroadcastStreamer(seed=2025)
     try:
         model = s.load_avatar(str(MODEL_DIR))
+        _model = model
         print(f"[viewer] 모델 인식: {model.summary()}")
+        print(f"[viewer] 표정 {len(model.expressions)}개 · 표식 후보 {model.watermark_candidates()}")
         have_model = True
     except Exception as e:
         print(f"[viewer] 모델 로드 실패({e}) — 기본 파라미터로 진행")
@@ -67,18 +105,25 @@ def _ai_loop() -> None:
 
 
 class Handler(SimpleHTTPRequestHandler):
+    def _json(self, obj):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):  # noqa: N802
-        if self.path.split("?")[0] == "/frame":
+        route = self.path.split("?")[0]
+        if route == "/frame":
             with _lock:
-                body = json.dumps(_latest).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
+                return self._json(_latest)
+        if route == "/expressions":
+            return self._json(_expressions_payload())
+        if route == "/inspect":
+            return self._json(_inspect_payload())
         return super().do_GET()
 
     def log_message(self, *args):  # 조용히
