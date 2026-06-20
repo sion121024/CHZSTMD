@@ -1,18 +1,18 @@
-# 코어(신경망 포함)는 표준 라이브러리만으로 동작한다.
-# 모델은 외부 사전학습 모델이 아니라 src/broadcast_ai/nn + model/unified.py 에
-# 처음부터 직접 구현한 단일 신경망이다. 따라서 LLM 런타임 의존성이 없다.
+# Core (incl. the from-scratch neural net) runs on the standard library only.
+# The model is NOT an external pretrained model: it is defined from scratch in
+# src/broadcast_ai/nn + model/unified.py. So there is no LLM runtime dependency.
 #
-# 아래는 실제 음성/화면인식/수치가속을 켤 때만 쓰는 선택적 로컬 패키지이며,
-# 외부 API 호출은 어떤 경우에도 사용하지 않는다.
+# The packages below are optional, local-only, and used only when you turn on
+# real voice / screen capture / numeric acceleration. No external API is ever used.
 
-# --- 저지연 로컬 TTS (택1) ---
-# piper-tts                    # 초저지연 온디바이스 TTS
-# TTS                          # Coqui XTTS 계열
+# --- Low-latency local TTS (pick one) ---
+# piper-tts                    # on-device low-latency TTS
+# TTS                          # Coqui XTTS family
 
-# --- 화면 인식 / OCR (게임 튜토리얼 자동 학습) ---
-# mss                          # 빠른 화면 캡처
-# pillow                       # 이미지 처리
-# pytesseract                  # 온디바이스 OCR
+# --- Screen capture / OCR (in-game tutorial auto-learning) ---
+# mss                          # fast screen capture
+# pillow                       # image processing
+# pytesseract                  # on-device OCR
 
-# --- 수치 가속 (선택) ---
-# numpy>=1.26                  # nn 백엔드를 numpy로 바꾸면 더 높은 Hz
+# --- Numeric acceleration (optional) ---
+# numpy>=1.26                  # swap the nn backend to numpy for higher Hz

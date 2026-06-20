@@ -1,2 +1,2 @@
-# VTube Studio 플러그인용
+# VTube Studio plugin dependency
 websocket-client>=1.6
