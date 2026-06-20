@@ -40,6 +40,25 @@ class SpeakResult:
     warnings: list[str] = field(default_factory=list)
 
 
+# 감정 → 표정 파라미터 (눈썹 가산, 미소 하한, 입모양 form). form 음수=찡그림.
+EMO_FACE = {
+    "excited":    (0.45, 0.75, 0.45),
+    "amused":     (0.20, 0.70, 0.40),
+    "focused":    (-0.15, 0.10, 0.00),
+    "surprised":  (0.80, 0.15, 0.20),
+    "frustrated": (-0.45, 0.00, -0.40),
+    "neutral":    (0.00, 0.20, 0.10),
+}
+
+
+def _apply_emotion(pose: Pose, emotion: str) -> None:
+    """현재 감정에 맞춰 표정(눈썹/미소/볼/입모양)을 얹는다."""
+    brow, smile, form = EMO_FACE.get(emotion, EMO_FACE["neutral"])
+    pose.brow_raise = max(-1.0, min(1.0, pose.brow_raise + brow))
+    pose.smile = max(0.0, min(1.0, max(pose.smile, smile)))   # → 눈웃음/볼/입꼬리
+    pose.mouth_wide = form                                    # 말 안 할 때 입모양
+
+
 class BroadcastStreamer:
     def __init__(self, config: Config | None = None,
                  persona: Persona | None = None, seed: int = 1234) -> None:
@@ -61,6 +80,10 @@ class BroadcastStreamer:
         self._energy = 0.2
         self._viseme_open = 0.0
         self._viseme_wide = 0.0
+        self._smooth: dict[str, float] = {}     # 모션 EMA 평활 상태
+        self._emotion = "neutral"
+        # 감정을 외부에서 지정하고 싶을 때(뷰어 무드 드라이버 등). None이면 모델 의도 사용.
+        self.emotion_override: str | None = None
 
         # Live2D 아바타(선택): load_avatar()로 실제 모델을 연결한다.
         self.live2d_model: Live2DModel | None = None
@@ -105,11 +128,20 @@ class BroadcastStreamer:
         obs.excite_drive = max(obs.excite_drive, self._energy)
         out = self.agent.tick(obs)
         self._energy = 0.7 * self._energy + 0.3 * out.intent.energy
+        self._emotion = self.emotion_override or out.intent.emotion
 
         pose: Pose = self.adapter.to_pose(out.motion, energy=self._energy)
+        # 흔들림 EMA 평활 → 떨림 제거, 부드럽고 자연스러운 움직임
+        a = 0.16
+        for f in ("head_yaw", "head_pitch", "head_roll", "body_sway", "arm_l", "arm_r"):
+            v = a * getattr(pose, f) + (1 - a) * self._smooth.get(f, getattr(pose, f))
+            self._smooth[f] = v
+            setattr(pose, f, v)
+        # 감정 → 표정(눈썹/미소/볼/입모양) 오버레이
+        _apply_emotion(pose, self._emotion)
         if self._speaking:
             pose.mouth_open = max(pose.mouth_open, self._viseme_open)
-            pose.mouth_wide = max(pose.mouth_wide, self._viseme_wide)
+            pose.mouth_wide = self._viseme_wide if self._viseme_wide else pose.mouth_wide
         self.rig.apply(pose)
         return pose
 
@@ -129,7 +161,8 @@ class BroadcastStreamer:
             raise RuntimeError("먼저 load_avatar(model3_path)로 Live2D 모델을 연결하세요.")
         pose = self._tick_pose(context)
         lip = self._viseme_open if self._speaking else None
-        return self.live2d.apply(pose, lipsync_open=lip)
+        form = self._viseme_wide if self._speaking else None
+        return self.live2d.apply(pose, lipsync_open=lip, lipsync_form=form)
 
     def export_live2d_motion(self, path: str, seconds: float = 5.0,
                              fps: int | None = None) -> int:

@@ -35,6 +35,24 @@ _latest: dict = {}
 _model = None          # Live2DModel (표정/파트/표식 조회용)
 _lock = threading.Lock()
 
+# 감정 무드 순환(데모): ~5초마다 바뀌어 표정이 감정 따라 변하는 걸 보여준다.
+EMO_CYCLE = ["amused", "neutral", "excited", "focused", "amused", "surprised", "excited", "neutral"]
+
+
+def _talk_mouth(t: float):
+    """음절 기반 입 움직임 — 단순 사인보다 말하는 것처럼 자연스럽게.
+
+    음절마다(약 5.5Hz) 진폭이 다른 입벌림 + 모음별 입너비 변화.
+    """
+    syl = t * 5.5
+    i = int(syl)
+    frac = syl - i
+    r = (math.sin(i * 12.9898) * 43758.5453) % 1.0   # 음절별 의사난수 진폭
+    peak = 0.3 + 0.6 * r
+    openv = max(0.0, peak * (math.sin(math.pi * frac) ** 1.4))   # 음절 사이엔 닫힘
+    wide = 0.35 * ((math.sin(i * 7.13) + 1) / 2) - 0.1
+    return openv, wide
+
 
 def _parse_exp3(path) -> list[dict]:
     """exp3.json → [{id, value, blend}] 파라미터 오버라이드 목록."""
@@ -88,19 +106,23 @@ def _ai_loop() -> None:
     t0 = time.perf_counter()
     while True:
         t = time.perf_counter() - t0
-        # 7초 주기로 약 2.5초간 '말하기'(립싱크 보여주기)
-        speaking = (t % 7.0) < 2.5
+        # 8초 주기로 약 3초간 '말하기'(립싱크 시연)
+        speaking = (t % 8.0) < 3.0
         s._speaking = speaking
+        # 감정 무드: ~5초마다 바뀌고 말할 땐 들뜸 → 표정이 감정 따라 변함
+        s.emotion_override = "excited" if speaking else EMO_CYCLE[int(t / 5.0) % len(EMO_CYCLE)]
         if speaking:
-            # 모음처럼 입을 여닫는 립싱크 진폭
-            s._viseme_open = max(0.0, 0.5 + 0.5 * math.sin(t * 13.0)) * 0.9
+            openv, wide = _talk_mouth(t)
+            s._viseme_open, s._viseme_wide = openv, wide
             s._energy = 0.8
+        else:
+            s._viseme_open = s._viseme_wide = 0.0
         try:
             frame = s.render_live2d_frame() if have_model else {}
         except Exception:
             frame = {}
         with _lock:
-            _latest = {"speaking": speaking, "params": frame}
+            _latest = {"speaking": speaking, "emotion": s.emotion_override, "params": frame}
         time.sleep(1.0 / FPS)
 
 

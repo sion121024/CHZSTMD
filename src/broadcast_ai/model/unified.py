@@ -180,8 +180,9 @@ class UnifiedAgent:
     # ---- 내부 모션 드라이브 갱신 (OU 잡음) ----------------------------------
     def _advance_drives(self) -> tuple[float, float, float]:
         # Ornstein-Uhlenbeck: 평균회귀 잡음. slow=느린 호흡류, fast=미세 떨림.
-        thetas = (0.02, 0.15, 0.25)
-        sigmas = (0.18, 0.5, 0.5)
+        # 빠른 잡음(떨림)을 줄여 미세한 흔들림이 덜 어색하게.
+        thetas = (0.02, 0.12, 0.2)
+        sigmas = (0.16, 0.3, 0.3)
         for i in range(3):
             self._ou[i] += -thetas[i] * self._ou[i] + sigmas[i] * self._rng.gauss(0, 1)
             self._ou[i] = max(-3.0, min(3.0, self._ou[i]))
@@ -245,12 +246,13 @@ class UnifiedAgent:
     def _motion(self, h: list[float], dt: float, energy_hint: float) -> MotionPose:
         vel = tanh(self.head_motion(h))
         # 에너지가 높을수록 움직임 진폭이 커진다(감정→모션, 같은 모델 안에서).
-        gain = 0.9 + 1.4 * max(0.0, min(1.0, energy_hint))
-        damp = 0.06   # 중립으로 약하게 끌어당겨 폭주 방지(관성 있는 안정화)
+        gain = 0.8 + 1.0 * max(0.0, min(1.0, energy_hint))
+        damp = 0.09   # 중립으로 끌어당겨 폭주/표류 방지(관성 있는 안정화)
         for i in range(N_MOTION):
-            self.pose[i] += vel[i] * gain * dt * 6.0
+            # 속도를 낮춰(×3.2) 천천히 움직이게 → 덜 어색하고 더 사람 같다
+            self.pose[i] += vel[i] * gain * dt * 3.2
             self.pose[i] += (self._neutral[i] - self.pose[i]) * damp
-            self.pose[i] = _clamp(self.pose[i], -1.2, 1.2)
+            self.pose[i] = _clamp(self.pose[i], -1.0, 1.0)
         return MotionPose(values={name: self.pose[i] for i, name in enumerate(MOTION_CHANNELS)})
 
     # ---- 발화 의도 헤드 ------------------------------------------------------

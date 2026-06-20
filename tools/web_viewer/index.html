@@ -28,6 +28,7 @@ const MODEL_FILE = new URLSearchParams(location.search).get('model') || 'youling
 const MODEL_URL = MODEL_BASE + MODEL_FILE;
 
 let current = {};   // 서버(/frame)에서 받은 최신 AI 파라미터
+let lastEmotion = '';
 
 // AI 파라미터를 30fps로 받아 둔다(렌더와 분리).
 async function pollLoop(){
@@ -35,6 +36,7 @@ async function pollLoop(){
     const r = await fetch('/frame', { cache: 'no-store' });
     const data = await r.json();
     current = (data && data.params) || {};
+    if (data && data.emotion) lastEmotion = data.emotion;
   } catch(e) { /* 서버 잠깐 끊겨도 무시 */ }
   setTimeout(pollLoop, 33);
 }
@@ -118,11 +120,13 @@ async function pollLoop(){
     const keyHint = expressions.length ? ('숫자키 1~' + (expressions.length >= 10 ? '0' : expressions.length) + ' 전환, Esc 해제') : '표정 파일 없음';
     setStatus(
       '✅ youling 구동 중 (AI 모션·립싱크)\n' +
-      '표정: ' + expName + '   [' + keyHint + ']\n' +
+      '감정: ' + (lastEmotion || '…') + '  → 표정 자동 변화\n' +
+      '표정(수동): ' + expName + '   [' + keyHint + ']\n' +
       (watermarkParts.length ? ('무료 표식 자동 숨김: ' + watermarkParts.length + '개') : '표식 후보 없음')
     );
   }
   updateStatus();
+  setInterval(updateStatus, 500);
   pollLoop();
 })();
 </script>
