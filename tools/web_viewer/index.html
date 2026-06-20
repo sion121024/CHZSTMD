@@ -8,6 +8,13 @@
   #status { position: fixed; left: 12px; top: 10px; color: #cfcfe6; font-size: 13px;
             background: rgba(0,0,0,.45); padding: 6px 10px; border-radius: 8px; z-index: 10; white-space: pre-line; }
   canvas { display: block; }
+  #bar { position: fixed; left: 12px; bottom: 12px; z-index: 10; display: flex; gap: 6px;
+         flex-wrap: wrap; align-items: center; background: rgba(0,0,0,.40); padding: 8px 10px; border-radius: 10px; }
+  #bar button { background: #3b3566; color: #eee; border: 0; padding: 7px 11px; border-radius: 7px;
+                font-size: 13px; cursor: pointer; }
+  #bar button:hover { background: #524a8c; }
+  #bar input { background: #221f3a; color: #eee; border: 1px solid #4a4470; border-radius: 7px;
+               padding: 7px 9px; font-size: 13px; width: 150px; }
 </style>
 <!-- 1) Live2D Cubism Core (공식 CDN — 따로 받을 필요 없음) -->
 <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
@@ -18,6 +25,30 @@
 </head>
 <body>
 <div id="status">로딩 중…</div>
+<div id="bar">
+  <span style="color:#bbb">제스처:</span>
+  <button data-g="wink">윙크 😉</button>
+  <button data-g="wave">손인사 👋</button>
+  <button data-g="nod">끄덕 🙂</button>
+  <button data-g="shake">도리도리</button>
+  <button data-g="tilt">갸웃</button>
+  <button data-g="surprise">놀람 😲</button>
+  <button data-g="bounce">폴짝</button>
+  <input id="cmd" placeholder="예: 윙크해줘" />
+</div>
+<script>
+// 제스처 버튼 → 서버에 트리거 요청(AI 모션 위에 잠깐 덧씌워짐)
+function gesture(name){ fetch('/gesture?name=' + encodeURIComponent(name)).catch(()=>{}); }
+document.querySelectorAll('#bar button').forEach(b =>
+  b.addEventListener('click', () => gesture(b.dataset.g)));
+const cmdBox = document.getElementById('cmd');
+cmdBox.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && cmdBox.value.trim()){
+    fetch('/command?text=' + encodeURIComponent(cmdBox.value.trim())).catch(()=>{});
+    cmdBox.value = '';
+  }
+});
+</script>
 <script>
 const STATUS = document.getElementById('status');
 function setStatus(t){ STATUS.textContent = t; }

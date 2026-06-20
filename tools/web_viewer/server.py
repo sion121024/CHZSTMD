@@ -33,6 +33,7 @@ MODEL_DIR = ROOT / "assets" / "avatar" / "gothic_lolita"
 
 _latest: dict = {}
 _model = None          # Live2DModel (표정/파트/표식 조회용)
+_streamer = None       # BroadcastStreamer (제스처 트리거용)
 _lock = threading.Lock()
 
 # 감정 무드 순환(데모): ~5초마다 바뀌어 표정이 감정 따라 변하는 걸 보여준다.
@@ -91,8 +92,9 @@ def _inspect_payload() -> dict:
 
 def _ai_loop() -> None:
     """백그라운드에서 AI를 돌리며 매 프레임 Live2D 파라미터를 갱신한다."""
-    global _latest, _model
+    global _latest, _model, _streamer
     s = BroadcastStreamer(seed=2025)
+    _streamer = s
     try:
         model = s.load_avatar(str(MODEL_DIR))
         _model = model
@@ -146,6 +148,18 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(_expressions_payload())
         if route == "/inspect":
             return self._json(_inspect_payload())
+        if route == "/gesture":
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            name = (q.get("name") or [""])[0]
+            ok = bool(_streamer and _streamer.trigger_gesture(name))
+            return self._json({"ok": ok, "gesture": name})
+        if route == "/command":
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            text = (q.get("text") or [""])[0]
+            did = _streamer.command(text) if _streamer else None
+            return self._json({"ok": did is not None, "gesture": did})
         return super().do_GET()
 
     def log_message(self, *args):  # 조용히

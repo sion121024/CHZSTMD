@@ -22,6 +22,7 @@ from ..cognition.brain import Brain
 from ..cognition.persona import Persona
 from ..avatar.rig import Rig, Pose
 from ..avatar.motion import MotionAdapter
+from ..avatar.gesture import GestureController, detect_gesture
 from ..avatar.lipsync import LipSync
 from ..avatar.live2d import Live2DModel, Live2DAvatar
 from ..speech.tts import StreamingTTS, AudioChunk
@@ -70,6 +71,7 @@ class BroadcastStreamer:
 
         self.brain = Brain(self.agent, persona)
         self.adapter = MotionAdapter()
+        self.gesture = GestureController()    # 명령으로 부르는 제스처(윙크 등)
         self.lipsync = LipSync()
         self.tts = StreamingTTS(self.cfg.speech)
         self.rig = Rig()
@@ -142,8 +144,22 @@ class BroadcastStreamer:
         if self._speaking:
             pose.mouth_open = max(pose.mouth_open, self._viseme_open)
             pose.mouth_wide = self._viseme_wide if self._viseme_wide else pose.mouth_wide
+        # 명령 제스처(윙크/손인사/끄덕임 등)를 AI 모션 위에 잠깐 덧씌운다.
+        self.gesture.apply(pose)
         self.rig.apply(pose)
         return pose
+
+    # ---- 명령 제스처 ---------------------------------------------------------
+    def trigger_gesture(self, name: str) -> bool:
+        """제스처를 즉시 재생한다(예: "wink"). 알 수 없으면 False."""
+        return self.gesture.trigger(name)
+
+    def command(self, text: str) -> str | None:
+        """자유 텍스트에서 제스처 명령을 감지해 실행한다. 실행한 제스처명 반환."""
+        name = detect_gesture(text)
+        if name and self.gesture.trigger(name):
+            return name
+        return None
 
     # ---- 매 프레임 아바타 (AI가 모션 생성) -----------------------------------
     def render_frame(self, context: Observation | None = None) -> dict:
@@ -252,6 +268,8 @@ class BroadcastStreamer:
 
     # ---- 고수준 행동 ----------------------------------------------------------
     def on_chat(self, viewer_text: str, **kw) -> SpeakResult:
+        # 시청자가 "윙크해줘/손 흔들어줘" 같은 동작을 요청하면 함께 수행.
+        self.command(viewer_text)
         return self.speak(self.brain.respond_chat(viewer_text), **kw)
 
     def comment(self, event: str, **kw) -> SpeakResult:

@@ -206,9 +206,12 @@ class Live2DAvatar:
         put("ParamHairBack", pose.body_sway * 2.0, -1, 1)
 
         # 눈 깜빡임 — 모델의 EyeBlink 그룹을 따른다(1=뜸, 0=감음).
-        eye_open = 1.0 - _clamp(pose.eye_blink, 0.0, 1.0)
+        # 윙크 등 한쪽 눈만 감는 제스처는 id의 L/R로 좌우를 구분해 적용한다.
+        base_open = 1.0 - _clamp(pose.eye_blink, 0.0, 1.0)
         for pid in (m.eyeblink_ids or ["ParamEyeLOpen", "ParamEyeROpen"]):
-            put(pid, eye_open, 0, 1)
+            u = pid.upper()
+            wink = pose.wink_l if "L" in u else pose.wink_r if "R" in u else 0.0
+            put(pid, base_open * (1.0 - _clamp(wink, 0.0, 1.0)), 0, 1)
 
         # 립싱크 — 모델의 LipSync 그룹을 따른다.
         mouth = pose.mouth_open if lipsync_open is None else lipsync_open

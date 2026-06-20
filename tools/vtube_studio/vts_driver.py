@@ -126,8 +126,9 @@ def map_to_vts(frame: dict) -> dict[str, float]:
         "MouthSmile": _clamp(0.5 + 0.5 * mouth["wide"] + mouth["smile"], 0, 1),
         # 입모양(아/이): VTS의 MouthForm/MouthX 가 있으면 모음 폭이 더 자연스러움.
         "MouthForm": _clamp(mouth["wide"], -1, 1),
-        "EyeOpenLeft": _clamp(1.0 - eyes["blink"], 0, 1),
-        "EyeOpenRight": _clamp(1.0 - eyes["blink"], 0, 1),
+        # 좌우 눈 따로 — 윙크 제스처가 VTS에서도 보인다.
+        "EyeOpenLeft": _clamp(eyes.get("open_l", 1.0 - eyes["blink"]), 0, 1),
+        "EyeOpenRight": _clamp(eyes.get("open_r", 1.0 - eyes["blink"]), 0, 1),
         "Brows": _clamp(eyes["brow"], -1, 1),
     }
 
@@ -184,11 +185,25 @@ def main():
     mouth = _Mouth()
     last_emo = None
     smooth: dict[str, float] = {}        # 주입값 프레임간 평활 → 끊김 없이 부드럽게
+
+    # 콘솔에 명령을 치면 제스처 재생 — 예: "윙크해줘", "손 흔들어", "wink".
+    import threading
+
+    def _stdin_commands():
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            did = s.command(line) or (line if s.trigger_gesture(line) else None)
+            print(f"  → 제스처: {did}" if did else "  (인식된 제스처 없음)")
+    threading.Thread(target=_stdin_commands, daemon=True).start()
+
     t0 = time.perf_counter()
     tprev = t0
     print("AI 구동 시작 — VTS의 youling이 움직입니다. (Ctrl+C 종료)")
     print("머리가 안 움직이면 VTS에서 웹캠 트래킹을 끄세요"
           "(설정 → 카메라 Off). 그래야 우리 AI 주입값이 머리를 구동합니다.")
+    print("제스처: 이 창에 '윙크해줘' / '손 흔들어' / 'wink' 처럼 입력하면 재생됩니다.")
     try:
         while True:
             now = time.perf_counter()

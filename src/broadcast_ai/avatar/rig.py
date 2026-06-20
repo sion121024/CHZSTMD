@@ -21,7 +21,9 @@ class Pose:
     breath: float = 0.0       # 호흡에 따른 흉부 스케일(0..1)
 
     # 얼굴
-    eye_blink: float = 0.0    # 0=뜸, 1=감음
+    eye_blink: float = 0.0    # 0=뜸, 1=감음 (양쪽)
+    wink_l: float = 0.0       # 왼눈만 추가로 감음(윙크 등 제스처)
+    wink_r: float = 0.0       # 오른눈만 추가로 감음
     brow_raise: float = 0.0
     mouth_open: float = 0.0   # 립싱크에서 갱신
     mouth_wide: float = 0.0   # 입모양(아/이 구분)
@@ -43,6 +45,8 @@ class Pose:
             body_sway=lerp(self.body_sway, other.body_sway),
             breath=lerp(self.breath, other.breath),
             eye_blink=lerp(self.eye_blink, other.eye_blink),
+            wink_l=lerp(self.wink_l, other.wink_l),
+            wink_r=lerp(self.wink_r, other.wink_r),
             brow_raise=lerp(self.brow_raise, other.brow_raise),
             mouth_open=lerp(self.mouth_open, other.mouth_open),
             mouth_wide=lerp(self.mouth_wide, other.mouth_wide),
@@ -64,11 +68,15 @@ class Rig:
     def to_render_frame(self) -> dict:
         """렌더러로 보낼 직렬화 가능한 프레임."""
         p = self.pose
+        base_open = 1.0 - max(0.0, min(1.0, p.eye_blink))
+        open_l = base_open * (1.0 - max(0.0, min(1.0, p.wink_l)))
+        open_r = base_open * (1.0 - max(0.0, min(1.0, p.wink_r)))
         return {
             "head": [round(p.head_yaw, 4), round(p.head_pitch, 4), round(p.head_roll, 4)],
             "body_sway": round(p.body_sway, 4),
             "breath": round(p.breath, 4),
-            "eyes": {"blink": round(p.eye_blink, 4), "brow": round(p.brow_raise, 4)},
+            "eyes": {"blink": round(p.eye_blink, 4), "brow": round(p.brow_raise, 4),
+                     "open_l": round(open_l, 4), "open_r": round(open_r, 4)},
             "mouth": {"open": round(p.mouth_open, 4), "wide": round(p.mouth_wide, 4),
                       "smile": round(p.smile, 4)},
             "arms": [round(p.arm_l, 4), round(p.arm_r, 4)],
