@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>youling — AI 구동 Live2D 뷰어</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1a1730; overflow: hidden; font-family: system-ui, sans-serif; }
+  #status { position: fixed; left: 12px; top: 10px; color: #cfcfe6; font-size: 13px;
+            background: rgba(0,0,0,.45); padding: 6px 10px; border-radius: 8px; z-index: 10; white-space: pre-line; }
+  canvas { display: block; }
+</style>
+<!-- 1) Live2D Cubism Core (공식 CDN — 따로 받을 필요 없음) -->
+<script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+<!-- 2) PixiJS -->
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js"></script>
+<!-- 3) pixi-live2d-display (Cubism 4/moc3) -->
+<script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/cubism4.min.js"></script>
+</head>
+<body>
+<div id="status">로딩 중…</div>
+<script>
+const STATUS = document.getElementById('status');
+function setStatus(t){ STATUS.textContent = t; }
+
+// 모델 파일명: ?model=xxx.model3.json 으로 바꿀 수 있음(기본 youling).
+const MODEL_BASE = '/assets/avatar/gothic_lolita/';
+const MODEL_FILE = new URLSearchParams(location.search).get('model') || 'youling.model3.json';
+const MODEL_URL = MODEL_BASE + MODEL_FILE;
+
+let current = {};   // 서버(/frame)에서 받은 최신 AI 파라미터
+
+// AI 파라미터를 30fps로 받아 둔다(렌더와 분리).
+async function pollLoop(){
+  try {
+    const r = await fetch('/frame', { cache: 'no-store' });
+    const data = await r.json();
+    current = (data && data.params) || {};
+  } catch(e) { /* 서버 잠깐 끊겨도 무시 */ }
+  setTimeout(pollLoop, 33);
+}
+
+(async function main(){
+  if (!window.PIXI || !PIXI.live2d) { setStatus('PixiJS/Live2D 로드 실패 — 인터넷 연결 확인'); return; }
+  if (typeof Live2DCubismCore === 'undefined') { setStatus('Cubism Core 로드 실패 — 인터넷 연결 확인'); return; }
+
+  const app = new PIXI.Application({
+    view: undefined, resizeTo: window, backgroundAlpha: 0, antialias: true,
+  });
+  document.body.appendChild(app.view);
+
+  let model;
+  try {
+    setStatus('모델 로딩: ' + MODEL_FILE);
+    model = await PIXI.live2d.Live2DModel.from(MODEL_URL);
+  } catch (e) {
+    setStatus('모델 로드 실패: ' + MODEL_FILE + '\n' + e + '\n→ ?model=정확한파일명.model3.json 로 바꿔보세요');
+    console.error(e); return;
+  }
+
+  app.stage.addChild(model);
+  // 중앙 배치 + 화면 높이에 맞춰 스케일
+  function fit(){
+    const s = (window.innerHeight * 0.92) / (model.internalModel.height || 1000);
+    model.scale.set(s);
+    model.x = window.innerWidth / 2;
+    model.y = window.innerHeight / 2;
+  }
+  if (model.anchor) model.anchor.set(0.5, 0.5);
+  fit(); window.addEventListener('resize', fit);
+
+  // 모델 자체 모션이 우리 파라미터와 싸우지 않게 정지
+  try { model.internalModel.motionManager.stopAllMotions(); } catch(e){}
+
+  const core = model.internalModel.coreModel;
+
+  // 매 프레임: 우리 AI가 보낸 파라미터를 모델에 주입
+  app.ticker.add(() => {
+    try { model.internalModel.motionManager.stopAllMotions(); } catch(e){}
+    for (const id in current) {
+      try { core.setParameterValueById(id, current[id]); } catch(e){}
+    }
+  });
+
+  setStatus('✅ youling 구동 중 — AI가 호흡·깜빡임·표정·립싱크를 생성합니다');
+  pollLoop();
+})();
+</script>
+</body>
+</html>
